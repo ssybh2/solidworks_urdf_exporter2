@@ -109,7 +109,7 @@ Releases = "https://github.com/jsk-ros-pkg/solidworks_urdf_exporter2/releases"
 sw2urdf = "sw2robot.exporter.export:main"     # extract + build (needs SolidWorks)
 inv2robot = "sw2robot.exporter.inventor:main"  # Inventor IAM/IPT -> graph + URDF/MJCF
 sw2robot = "sw2robot.editor.cli:main"        # headless build/edit/export CLI
-sw2robot-web = "sw2robot.editor.webserver:main"  # the browser editor server
+sw2robot-web = "sw2robot.editor.inventor_webserver:main"  # SolidWorks + Inventor browser editor
 
 # hatchling's default sdist sweeps in every non-gitignored path in the repo --
 # INCLUDING untracked scratch directories.  A local docs/ tree took the sdist
