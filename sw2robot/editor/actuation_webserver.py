@@ -9,12 +9,18 @@ It also exposes ``mujoco_actuation_enabled``.  Motor joints keep their actuator
 interfaces regardless of this flag; the flag only decides whether MuJoCo lets
 those actuators apply force immediately when the exported model is loaded.
 
+``mujoco_spawn_height`` is an optional absolute world-Z height in metres for the
+floating base.  Missing / null means Auto: the exporter uses the mesh-derived
+safe ``home`` height.  A numeric value overrides both the default free-body pose
+and the home keyframe, so direct MuJoCo viewer launches and Reset/Home agree.
+
 ``sw2robot-web`` points here.  Everything except the actuation endpoints is
 delegated to :mod:`sw2robot.editor.inventor_webserver`.
 """
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import urllib.parse
@@ -64,6 +70,21 @@ def _config_bool(cfg, key, default=False):
     return bool(raw)
 
 
+def _config_optional_nonnegative_float(cfg, key):
+    if key not in cfg or cfg.get(key) is None:
+        return None
+    raw = cfg.get(key)
+    if isinstance(raw, str) and raw.strip().lower() in {"", "auto", "none", "null"}:
+        return None
+    if isinstance(raw, bool):
+        return None
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return None
+    return value if math.isfinite(value) and value >= 0.0 else None
+
+
 def _movable_joints(pkg_dir, urdf_rel):
     """Final joint names in the served working URDF, in URDF order."""
     if not pkg_dir or not urdf_rel:
@@ -102,14 +123,7 @@ def _configured_actuated(cfg):
 
 
 def actuation_payload(pkg_dir, urdf_rel):
-    """Effective Motor / Passive state for the current CAD package.
-
-    Before the first manual edit this mirrors the exporter's existing priority:
-    explicit ``actuated_joints`` -> ``ACT_*`` convention -> automatic closed-loop
-    independent/dependent selection.  The first toggle can therefore seed a
-    custom list from the *current* effective state instead of unexpectedly
-    turning every other motor off.
-    """
+    """Effective Motor / Passive state and MuJoCo startup export settings."""
     supported = bool(pkg_dir and urdf_rel and _ws._cad_mode(pkg_dir))
     movable = _movable_joints(pkg_dir, urdf_rel) if supported else []
     movable_set = set(movable)
@@ -128,9 +142,6 @@ def actuation_payload(pkg_dir, urdf_rel):
             loop = _inv._loop_closure_payload(pkg_dir) if supported else {}
             independent = set(loop.get("independent") or [])
             dependent = set(loop.get("dependent") or [])
-            # New sidecars define independent as all movable tree joints minus
-            # dependent.  For older sidecars with no positive list, subtract
-            # only the known dependents from all movable joints.
             selected = ((movable_set & independent) if independent
                         else (movable_set - dependent))
             mode = "auto"
@@ -147,6 +158,9 @@ def actuation_payload(pkg_dir, urdf_rel):
         # it does not mean "energise it immediately when the model is loaded".
         "mujoco_actuation_enabled": _config_bool(
             cfg, "mujoco_actuation_enabled", False),
+        # None means Auto: use the mesh-derived home clearance at export time.
+        "mujoco_spawn_height": _config_optional_nonnegative_float(
+            cfg, "mujoco_spawn_height"),
     }
 
 
@@ -160,6 +174,19 @@ def _set_top_level_bool(text, key, enabled):
     """Set one top-level YAML bool while leaving the rest of the file alone."""
     line = f"{key}: {'true' if enabled else 'false'}"
     pat = re.compile(rf"(?m)^{re.escape(key)}:\s*[^\n]*(?:\n|$)")
+    if pat.search(text):
+        return pat.sub(line + "\n", text, count=1)
+    if text and not text.endswith("\n"):
+        text += "\n"
+    return text + line + "\n"
+
+
+def _set_top_level_optional_number(text, key, value):
+    """Set a top-level numeric scalar, or remove it entirely for Auto mode."""
+    pat = re.compile(rf"(?m)^{re.escape(key)}:\s*[^\n]*(?:\n|$)")
+    if value is None:
+        return pat.sub("", text, count=1)
+    line = f"{key}: {float(value):.12g}"
     if pat.search(text):
         return pat.sub(line + "\n", text, count=1)
     if text and not text.endswith("\n"):
@@ -190,16 +217,10 @@ def set_actuated_joint(pkg_dir, urdf_rel, joint, motor):
     except FileNotFoundError:
         text = ""
 
-    # Store stable pre-rename keys when possible.  actuator_fixes.py applies the
-    # joint_names map at export time, so a later UI rename keeps the motor choice
-    # attached to the same physical joint.
     inverse = _ws._names_inverse(text, "joint_names")
     ordered_final = [name for name in status["movable"] if name in selected]
     stored = [inverse.get(name, name) for name in ordered_final]
 
-    # Preserve the rest of joints.yaml byte-for-byte as much as the upstream
-    # list-block helper permits.  An explicit empty list is significant: it means
-    # "zero motors" and must NOT collapse back to automatic mode.
     text = _strip_inline_actuated_list(text)
     text, _ = _ws._set_yaml_list_block(text, "actuated_joints", clear=True)
     if stored:
@@ -210,8 +231,6 @@ def set_actuated_joint(pkg_dir, urdf_rel, joint, motor):
             text += "\n"
         text += "actuated_joints: []\n"
 
-    # Make the first creation undoable too: snapshot an empty config before
-    # writing it, matching the rest of the CAD editor's YAML history model.
     if not os.path.exists(yml):
         open(yml, "a", encoding="utf-8").close()
     _ws._snapshot(
@@ -257,6 +276,43 @@ def set_mujoco_actuation_startup(pkg_dir, urdf_rel, enabled):
     return actuation_payload(pkg_dir, urdf_rel)
 
 
+def set_mujoco_spawn_height(pkg_dir, urdf_rel, height):
+    """Persist absolute floating-base spawn Z, or clear it for Auto mode."""
+    status = actuation_payload(pkg_dir, urdf_rel)
+    if not status["supported"]:
+        raise ValueError("MuJoCo spawn height is available for CAD packages only")
+
+    if height is not None:
+        if isinstance(height, bool):
+            raise ValueError("height must be a number in metres or null for Auto")
+        try:
+            height = float(height)
+        except (TypeError, ValueError) as e:
+            raise ValueError(
+                "height must be a number in metres or null for Auto") from e
+        if not math.isfinite(height) or height < 0.0:
+            raise ValueError("height must be finite and >= 0 metres")
+
+    yml = _config_path(pkg_dir, urdf_rel)
+    os.makedirs(os.path.dirname(yml), exist_ok=True)
+    try:
+        with open(yml, encoding="utf-8") as f:
+            text = f.read()
+    except FileNotFoundError:
+        text = ""
+
+    if not os.path.exists(yml):
+        open(yml, "a", encoding="utf-8").close()
+    label = "Auto" if height is None else f"{height:.6g} m"
+    _ws._snapshot(str(pkg_dir), yml, f"MuJoCo spawn height -> {label}")
+    text = _set_top_level_optional_number(text, "mujoco_spawn_height", height)
+    with open(yml, "w", encoding="utf-8") as f:
+        f.write(text)
+
+    print(f"[sw2robot.web] MuJoCo spawn height -> {label}")
+    return actuation_payload(pkg_dir, urdf_rel)
+
+
 def _read_json(handler):
     try:
         n = int(handler.headers.get("Content-Length", "0") or 0)
@@ -270,7 +326,7 @@ def _read_json(handler):
 
 
 class _ActuationHandler(_inv._InventorHandler):
-    """Inventor handler plus package-local actuation read/write endpoints."""
+    """Inventor handler plus package-local MuJoCo metadata endpoints."""
 
     def do_GET(self):
         path = urllib.parse.urlparse(self.path).path
@@ -311,14 +367,21 @@ class _ActuationHandler(_inv._InventorHandler):
                 return self._send_json({"error": str(e)}, 400)
             except OSError as e:
                 return self._send_json({"error": str(e)}, 500)
+        if path == "/api/set_spawn_height":
+            cls = type(self)
+            try:
+                data = _read_json(self)
+                payload = set_mujoco_spawn_height(
+                    cls.pkg_dir, cls.urdf_rel, data.get("height"))
+                return self._send_json(payload)
+            except ValueError as e:
+                return self._send_json({"error": str(e)}, 400)
+            except OSError as e:
+                return self._send_json({"error": str(e)}, 500)
         return super().do_POST()
 
 
 def main():
-    # inventor_webserver's extraction worker intentionally refers to its module
-    # global _InventorHandler for root/package state.  Replace that global as
-    # well as upstream's active handler so Inventor extraction keeps seeing the
-    # same class attributes after this extra subclass is installed.
     _inv._InventorHandler = _ActuationHandler
     _ws._Handler = _ActuationHandler
     return _inv.main()
