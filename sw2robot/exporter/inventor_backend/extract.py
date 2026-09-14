@@ -21,14 +21,20 @@ def _short_hash(text):
 
 
 def _robot_safe_name(raw):
-    """Readable ASCII robot/package name, including Unicode-only Inventor files.
+    """Readable ASCII robot/package name, including Unicode Inventor files.
 
-    ``model.safe_name`` intentionally strips non-ASCII characters.  A Chinese
-    filename such as ``整体装配体.iam`` therefore used to become just ``c_``.
-    That is legal but confusing, so give Unicode-only names a stable robot hash.
+    The shared ``safe_name`` helper intentionally strips non-ASCII text.  A
+    Chinese filename such as ``整体装配体2.iam`` would otherwise become the
+    misleading ``c_2`` and can accidentally reuse a stale package/joints.yaml.
+    If a name contains non-ASCII text but no ASCII letters, give it a stable
+    robot hash instead.  Mixed names such as ``robot_整机2`` keep their useful
+    ASCII portion.
     """
-    base = safe_name(str(raw))
-    if base == "c_" and any(ord(ch) > 127 for ch in str(raw)):
+    raw = str(raw)
+    base = safe_name(raw)
+    has_non_ascii = any(ord(ch) > 127 for ch in raw)
+    has_ascii_letter = any(ch.isascii() and ch.isalpha() for ch in raw)
+    if has_non_ascii and not has_ascii_letter:
         return f"robot_{_short_hash(raw)}"
     return base
 
@@ -157,9 +163,6 @@ def extract_inventor(cad_path, out_dir=None, robot_name=None,
                         if frames:
                             part_frames[comp.part_path] = frames
 
-                # Do this before any tree/build work.  Relationship records use
-                # the raw occurrence ``name`` and are therefore unaffected; only
-                # the eventual URDF-facing link names are made collision-free.
                 _assign_unique_link_names(components)
                 unique_count = len({c.link_name for c in components})
                 _emit(progress, f"unique URDF link names: {unique_count}/{len(components)}")
@@ -171,12 +174,9 @@ def extract_inventor(cad_path, out_dir=None, robot_name=None,
                 for line in diagnostics:
                     _emit(progress, line)
 
-                # If the CAD author has explicit Rotational/Slide Assembly
-                # Joints, those declarations are authoritative.  Old Insert
-                # constraints can coexist in the same IAM simply as positioning
-                # aids; promoting them to revolute created the exact 6 -> 8
-                # mismatch seen in the web editor.  Keep legacy constraints only
-                # as fixed connectivity in this mode.
+                # Explicit Inventor Assembly Joints are authoritative.  Legacy
+                # Insert constraints may coexist purely as positioning aids; in
+                # this mode they must never manufacture extra URDF DOFs.
                 native_motion = len(limits) > 0
                 if native_motion:
                     _emit(progress,
