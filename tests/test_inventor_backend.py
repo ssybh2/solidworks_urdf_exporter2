@@ -18,11 +18,13 @@ from sw2robot.exporter.inventor_backend.extract import (
     _robot_safe_name,
 )
 from sw2robot.exporter.inventor_backend.relationships import (
+    INV_PLANAR,
     INV_ROTATIONAL,
     INV_SLIDE,
     _constraint_axis,
     classic_constraints,
     joint_limits,
+    native_joints,
 )
 
 
@@ -40,6 +42,12 @@ class _Geometry:
     def __init__(self, center, normal):
         self.Center = _Point(*center)
         self.Normal = _Vector(*normal)
+
+
+class _Intent:
+    def __init__(self, point, direction):
+        self.Point = _Point(*point)
+        self.Geometry = _Geometry(point, direction)
 
 
 class _Collection:
@@ -83,6 +91,28 @@ class _Slider:
     LinearPositionEndLimit = 35.0
 
 
+def _joint(name, kind, a, b, point=(10.0, 20.0, 30.0), axis=(0.0, 1.0, 0.0)):
+    d = SimpleNamespace(
+        JointType=kind,
+        OriginOne=_Intent(point, axis),
+        OriginTwo=_Intent(point, axis),
+        FlipOriginDirection=False,
+        HasAngularPositionLimits=False,
+        HasLinearPositionStartLimit=False,
+        HasLinearPositionEndLimit=False,
+    )
+    return SimpleNamespace(
+        Name=name,
+        Suppressed=False,
+        Locked=False,
+        Definition=d,
+        AffectedOccurrenceOne=SimpleNamespace(Name=a),
+        AffectedOccurrenceTwo=SimpleNamespace(Name=b),
+        OccurrenceOne=SimpleNamespace(Name=a),
+        OccurrenceTwo=SimpleNamespace(Name=b),
+    )
+
+
 def test_point_converts_inventor_cm_to_m():
     assert point_m(_Point(10.0, -25.0, 2.5)) == pytest.approx([0.1, -0.25, 0.025])
 
@@ -124,8 +154,6 @@ def test_unicode_occurrences_that_collapse_to_same_ascii_get_unique_links():
     _assign_unique_link_names(comps)
     names = [c.link_name for c in comps]
     assert len(names) == len(set(names))
-    # The three Unicode names all sanitize to the same c_1 base in the shared
-    # helper, so every member of that collision group must receive a hash.
     assert all(n.startswith("c_1_") for n in names[:3])
     assert names[3] == "DM_J4310_1"
 
@@ -139,11 +167,8 @@ def test_exact_duplicate_occurrence_names_are_still_forced_unique():
 
 def test_constraint_axis_prefers_documented_assembly_space_geometry():
     constraint = SimpleNamespace(
-        # Correct assembly-space circle center = (10,20,30) cm.
         GeometryOne=_Geometry((10.0, 20.0, 30.0), (0.0, 1.0, 0.0)),
         GeometryTwo=None,
-        # Deliberately wrong definition/local-space fallback.  The extractor
-        # must never choose this while GeometryOne is available.
         EntityOne=_Geometry((900.0, 800.0, 700.0), (1.0, 0.0, 0.0)),
         EntityTwo=None,
     )
@@ -161,7 +186,6 @@ def test_non_insert_classic_constraint_is_not_force_fixed():
         AffectedOccurrenceTwo=b,
         OccurrenceOne=a,
         OccurrenceTwo=b,
-        # No AxesOpposed attribute => not an InsertConstraint.
     )
     definition = SimpleNamespace(Constraints=_Collection(constraint))
     edges, limits, ground = classic_constraints(
@@ -171,6 +195,49 @@ def test_non_insert_classic_constraint_is_not_force_fixed():
     assert edge.types == ["INVENTOR_CONSTRAINT"]
     assert limits == []
     assert ground == set()
+
+
+def test_classic_insert_cannot_add_dof_in_native_joint_mode():
+    a = SimpleNamespace(Name="body:1")
+    b = SimpleNamespace(Name="arm:1")
+    insert = SimpleNamespace(
+        Suppressed=False,
+        AffectedOccurrenceOne=a,
+        AffectedOccurrenceTwo=b,
+        OccurrenceOne=a,
+        OccurrenceTwo=b,
+        AxesOpposed=False,
+        GeometryOne=_Geometry((10.0, 20.0, 30.0), (0.0, 1.0, 0.0)),
+        GeometryTwo=None,
+        EntityOne=None,
+        EntityTwo=None,
+    )
+    definition = SimpleNamespace(Constraints=_Collection(insert))
+    edges, limits, _ = classic_constraints(
+        definition, {"body:1", "arm:1"}, set(), allow_movable=False)
+    assert limits == []
+    assert next(iter(edges.values())).types == ["INVENTOR_INSERT_FIXED"]
+
+
+def test_authored_rotational_wins_over_planar_on_same_pair():
+    a, b = "DM-J4310:1", "大臂大孔:1"
+    rotational = _joint("ACT_HIP_FL", INV_ROTATIONAL, a, b)
+    planar = _joint("old planar", INV_PLANAR, a, b)
+    definition = SimpleNamespace(Joints=_Collection(rotational, planar))
+    edges, limits, _ground, _covered, warnings, diagnostics = native_joints(
+        definition, {a, b})
+    assert len(edges) == 1
+    edge = next(iter(edges.values()))
+    assert edge.force_fixed is False
+    assert "INVENTOR_ROTATIONAL" in edge.types
+    assert "INVENTOR_PLANAR" in edge.types
+    assert edge.types.count("CONCENTRIC") == 2
+    assert len(limits) == 1
+    assert limits[0].type == "revolute"
+    assert limits[0].axis_point == pytest.approx([0.1, 0.2, 0.3])
+    assert limits[0].axis_dir == pytest.approx([0.0, 1.0, 0.0])
+    assert any("ACT_HIP_FL" in line for line in diagnostics)
+    assert any("INVENTOR_PLANAR" in msg for msg in warnings)
 
 
 def test_rotational_joint_limits_stay_in_radians():
