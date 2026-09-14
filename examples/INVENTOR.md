@@ -1,130 +1,195 @@
-# Autodesk Inventor backend (experimental)
+# Autodesk Inventor backend
 
-The `inventor-support` branch adds a Windows Inventor extraction path without replacing the existing sw2robot editor/build pipeline.
+The `inventor-support` branch adds a Windows Autodesk Inventor extraction path while keeping sw2robot's CAD-independent editor/build pipeline.
 
 ## Data flow
 
 ```text
 Inventor .iam / .ipt
         |
-        |  Inventor COM API
+        | Inventor COM API
         v
- graph.json + meshes/*.stl
+ graph.json + meshes/*.stl + appearance_colors.yaml
         |
-        +--> existing sw2robot browser editor
+        +--> sw2robot browser editor
         |
-        +--> existing URDF exporter
+        +--> working URDF + loop_closures.yaml
         |
-        `--> existing MuJoCo MJCF exporter
+        +--> ROS / ROS2 description package
+        |
+        `--> MuJoCo MJCF package
 ```
 
-Inventor is only required for the extraction step. Once `graph.json` and the meshes exist, the normal CAD-independent sw2robot workflow is reused.
+Inventor is needed only for extraction. After `graph.json` and meshes have been written, editing and export are CAD-independent.
 
-## Install from this branch
+## Windows installation
 
 ```powershell
 git clone -b inventor-support https://github.com/ssybh2/solidworks_urdf_exporter2.git
 cd solidworks_urdf_exporter2
-py -3.12 -m pip install -e .
+py -3.12 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install --upgrade pip
+.\.venv\Scripts\python.exe -m pip install -e .
 ```
 
 Autodesk Inventor must be installed on the Windows machine used for extraction.
 
-## Browser workflow
-
-The normal browser command is Inventor-aware on this branch:
+Start the Inventor-aware browser editor with:
 
 ```powershell
-sw2robot-web
+.\.venv\Scripts\sw2robot-web.exe
 ```
 
-Open the file browser, navigate to an Inventor project folder, and select a `.iam` or `.ipt`. The server will:
-
-1. try to attach to an already-running Inventor instance;
-2. start a private Inventor automation instance if none is attachable;
-3. extract `graph.json`, SI-unit mass/inertia, UCS frames and metre-scaled STL meshes;
-4. build the normal working URDF;
-5. open the result in the existing sw2robot editor.
-
-After that point the existing joint editor, coordinate-frame tooling, collision tooling and URDF/MJCF export path are shared with the SolidWorks backend.
+Then open `http://localhost:8090` and select an `.iam` or `.ipt` file.
 
 ## Command-line workflow
 
-Generate the normal sw2robot package and URDF:
+Generate the normal sw2robot package and working URDF:
 
 ```powershell
-inv2robot C:\CAD\robot.iam -o C:\CAD\robot_export
+.\.venv\Scripts\inv2robot.exe C:\CAD\robot.iam -o C:\CAD\robot_export
 ```
 
 Generate MuJoCo MJCF as well:
 
 ```powershell
-inv2robot C:\CAD\robot.iam -o C:\CAD\robot_export --mujoco
+.\.venv\Scripts\inv2robot.exe C:\CAD\robot.iam -o C:\CAD\robot_export --mujoco
 ```
 
 For a robot bolted to the world:
 
 ```powershell
-inv2robot C:\CAD\robot.iam -o C:\CAD\robot_export --mujoco --mujoco-fixed-base
+.\.venv\Scripts\inv2robot.exe C:\CAD\robot.iam -o C:\CAD\robot_export --mujoco --mujoco-fixed-base
 ```
 
-If Inventor is already running, it can be reused:
+Reuse an already-running Inventor instance:
 
 ```powershell
-inv2robot C:\CAD\robot.iam --attach --mujoco
+.\.venv\Scripts\inv2robot.exe C:\CAD\robot.iam --attach --mujoco
 ```
 
-Extract only, then use the existing sw2robot browser/editor workflow on the generated package:
+Extract only, then edit later without Inventor:
 
 ```powershell
-inv2robot C:\CAD\robot.iam -o C:\CAD\robot_export --extract-only
-sw2robot-web
+.\.venv\Scripts\inv2robot.exe C:\CAD\robot.iam -o C:\CAD\robot_export --extract-only
+.\.venv\Scripts\sw2robot-web.exe
 ```
 
-A single `.ipt` file is also accepted and becomes a one-link robot/body.
+A single `.ipt` is accepted and becomes a one-link body.
 
-## What is extracted in the first implementation
+## Recommended Inventor authoring style
+
+For robot kinematics prefer Inventor **Assembly Joints** over relying only on legacy constraints:
+
+| Inventor | sw2robot / URDF / MuJoCo |
+| --- | --- |
+| Rigid | fixed |
+| Rotational | revolute / hinge |
+| Slider | prismatic / slide |
+| Locked | fixed |
+
+Explicit Inventor Assembly Joints are authoritative. When explicit movable joints are present, old Insert/legacy constraints are not allowed to manufacture extra movable DOFs.
+
+For a pin joint, define one clean **Rotational Joint** with the origin on the real pin/shaft axis. Avoid describing the same physical hinge with both a Planar Joint and a Rotational Joint.
+
+Give useful frames named **UCS** objects, for example:
+
+```text
+UCS_IMU
+UCS_CAMERA
+UCS_TCP
+UCS_FOOT_FL
+```
+
+These frames are imported into sw2robot and can later be used as robot ports/sites/sensor frames.
+
+## What the Inventor extractor preserves
 
 - top-level `.iam` component occurrences
 - component local-to-assembly transforms
-- grounded and hidden occurrence state
-- native Inventor mass, center of mass, and inertia tensor
-- per-part high-resolution binary STL, explicitly exported in metres
-- assembly and component User Coordinate Systems (UCS)
-- native Assembly Joints:
-  - Rigid -> fixed
-  - Rotational -> revolute
-  - Slider -> prismatic
-  - locked joints -> fixed
-  - angular/linear travel limits when enabled
-- classic Insert constraints as revolute joints
-- remaining classic constraint relationships conservatively as fixed
+- grounded / hidden occurrence state
+- native mass, center of mass and inertia tensor
+- per-part binary STL explicitly exported in metres
+- assembly and component UCS frames
+- effective per-occurrence Inventor appearance colour
+- native Assembly Joints and enabled travel limits
+- stable ASCII internal link IDs even when the CAD occurrence names are Chinese
 
-The extracted joints are translated into sw2robot's existing `MateEdge` and `LimitJoint` intermediate representation. This is intentional: joint editing, axes, limits, the browser UI, URDF generation and MJCF generation continue to use the same code as the SolidWorks backend.
+The browser UI still shows the original Inventor/Chinese names; the ASCII IDs are kept internally for URDF/ROS/MuJoCo compatibility.
 
 ## Unit handling
 
-Inventor database length is centimetres and mass is kilograms. The backend converts:
+Inventor database units use centimetres for length, radians for angles and kilograms for mass. The backend converts:
 
 - positions / translations: cm -> m
 - inertia: kg*cm^2 -> kg*m^2
 - STL export units: metre
 - angular quantities: radians (no conversion)
 
-The shared mesh-inertia fallback also recognizes the Inventor `.stl` files as metre-native, so changing a density in the editor does not accidentally re-apply the SolidWorks millimetre scale.
+Inventor `.stl` files are treated as metre-native by the shared mesh-inertia fallback, so density edits do not accidentally apply the SolidWorks millimetre scale a second time.
+
+## Closed-loop mechanisms
+
+A wheel-leg, four-bar or other closed linkage cannot be represented directly by standard URDF because URDF requires a tree. sw2robot therefore keeps two pieces of information:
+
+```text
+working URDF                  legal kinematic tree
+loop_closures.yaml            movable edge(s) cut from that tree
+```
+
+The cut edge is not discarded.
+
+### Browser editor
+
+The Web editor loads `loop_closures.yaml` and runs a hard closed-loop IK solve. A user-driven joint is prescribed and the passive joints are solved so the closure is satisfied. If the requested driver value is outside the current assembly branch's reachable set, the pose is rejected/clipped instead of allowing the mechanism to tear apart.
+
+### ROS / ROS2
+
+The URDF remains a tree. ROS2 exports with detected closures additionally ship the closure configuration and the runtime `loop_closure_relay` helper so visualization can reconstruct the loop-dependent joint motion.
+
+### MuJoCo MJCF
+
+MuJoCo can represent a physical closed loop natively. The MJCF exporter restores every supported dropped revolute edge as **two collinear `equality/connect` constraints** between the two bodies. Two point-connect constraints remove the relative translation and axis-tilt DOFs while preserving rotation about the common hinge axis.
+
+Closed-loop dependent/passive joints do not receive actuators. The independent tree coordinates remain actuated. This fixes the old behavior where every URDF hinge automatically became a MuJoCo actuator.
+
+The exporter also remaps closure endpoints through fixed-link merging, so a closure whose original URDF endpoint was merged into a rigid parent still references the surviving MJCF body.
+
+## Appearance export
+
+Inventor extraction writes:
+
+```text
+appearance_colors.yaml
+```
+
+using the effective occurrence appearance. Those colours are automatically applied to:
+
+- the working URDF where it has no explicit material colour;
+- detached ROS exports;
+- MuJoCo visual geoms.
+
+Explicit editor / `joints.yaml` colour overrides win over the native CAD colour. If an older converter still emits a pure-black MuJoCo visual without a colour source, the MJCF post-processor replaces it with a neutral visible fallback.
 
 ## Current limitations
 
-This is an MVP intended to get real Inventor robots into the existing editor quickly.
-
-- Cylindrical, planar and ball Assembly Joints contain more than one DOF. sw2robot's current URDF-oriented intermediate model represents one joint DOF per tree edge, so these are kept fixed and reported as warnings for now.
-- Flexible/moving sub-assembly internals are not yet recursively expanded. A top-level sub-assembly is currently one link.
-- Classic Mate/Flush/Angle/Tangent constraint sets are not yet solved geometrically as deeply as the mature SolidWorks mate backend. A classic Insert constraint is recognized; other classic constraint pairs default to fixed and can be corrected in the existing editor.
+- Cylindrical, Planar and Ball Inventor Assembly Joints are multi-DOF. The current one-DOF tree model still treats these conservatively; use explicit Rigid/Rotational/Slider joints for the robot skeleton where possible.
+- Flexible/moving sub-assembly internals are not yet recursively expanded by the Inventor backend. For now expose important moving links as top-level occurrences when possible.
 - Inventor Model States / iAssembly variants are not yet exposed as sw2robot configurations.
-- Mesh caching currently keys by source document path, not Model State.
-- The source-installed `sw2robot-web` command uses the Inventor-aware wrapper. The existing PyInstaller `build_exe.py` still targets the upstream webserver entry point and needs a small follow-up before an Inventor-aware standalone `.exe` is released.
-- This branch has unit tests for the CAD-independent conversions, but it still needs an end-to-end test on a real Inventor `.iam` installation/model before being considered production-ready.
+- Legacy Mate/Flush/Angle/Tangent constraint inference is intentionally conservative compared with explicit Assembly Joints.
+- Standard URDF itself remains a tree. Native physical loop closure is restored only by consumers that support it (the Web solver, ROS2 relay, and MuJoCo equality constraints).
+- The source-installed `sw2robot-web` command is the currently recommended Inventor path. The standalone PyInstaller target still needs to be switched to the Inventor-aware wrapper before an Inventor-enabled binary release is published.
+- The real Inventor extraction/browser path has been exercised on a representative Windows assembly. The newest native MuJoCo equality/actuator exporter changes should still be re-exported and validated on that same real robot before this branch is treated as production-ready.
 
-## Recommended Inventor authoring style
+## Quick validation after MuJoCo export
 
-For the cleanest automatic conversion, use Inventor **Assembly Joints** (Rigid, Rotational, Slider) for robot kinematics instead of relying only on a large collection of legacy assembly constraints. Give useful frames a named **UCS**. Those concepts map directly to robot links, joints, axes and frames and therefore need much less inference.
+With the official Python MuJoCo package installed:
+
+```powershell
+$model = "C:\path\to\robot.xml"
+$env:MJCF_MODEL = $model
+python -c "import os,mujoco; m=mujoco.MjModel.from_xml_path(os.environ['MJCF_MODEL']); print('njnt=',m.njnt,'nu=',m.nu,'neq=',m.neq)"
+python -m mujoco.viewer --mjcf="$model"
+```
+
+For a closed-loop robot, `neq` should be non-zero. The number of actuators `nu` should match the independent/active coordinates rather than every passive hinge in the URDF tree.
