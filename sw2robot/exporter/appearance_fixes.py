@@ -1,7 +1,7 @@
 """Propagate native CAD appearance colours through detached exporters.
 
 Inventor extraction runs while the CAD application is available, but ROS/MJCF
-exports are often created much later from the cached package.  The Inventor
+exports are often created much later from the cached package. The Inventor
 backend therefore persists ``appearance_colors.yaml`` beside ``graph.json``.
 This module merges those native colours into every portable export automatically.
 
@@ -12,8 +12,8 @@ appearance.
 
 from __future__ import annotations
 
-from functools import wraps
 import os
+from functools import wraps
 
 _APPEARANCE_SIDECAR = "appearance_colors.yaml"
 
@@ -25,6 +25,7 @@ def _load_native_colors(pkg_dir):
         return {}
     try:
         import yaml
+
         with open(path, encoding="utf-8") as f:
             data = yaml.safe_load(f) or {}
     except Exception:
@@ -53,7 +54,7 @@ def install():
     """Patch ROS and MuJoCo public exporters once.
 
     ``exporter_fixes.install`` runs first and wraps MJCF for closed-loop equality
-    constraints / passive-actuator filtering.  These wrappers sit outside that
+    constraints / passive-actuator filtering. These wrappers sit outside that
     layer and only supply the merged colour map, so both fixes compose instead
     of replacing one another.
     """
