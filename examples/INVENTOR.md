@@ -30,7 +30,25 @@ py -3.12 -m pip install -e .
 
 Autodesk Inventor must be installed on the Windows machine used for extraction.
 
-## Convert an assembly
+## Browser workflow
+
+The normal browser command is Inventor-aware on this branch:
+
+```powershell
+sw2robot-web
+```
+
+Open the file browser, navigate to an Inventor project folder, and select a `.iam` or `.ipt`. The server will:
+
+1. try to attach to an already-running Inventor instance;
+2. start a private Inventor automation instance if none is attachable;
+3. extract `graph.json`, SI-unit mass/inertia, UCS frames and metre-scaled STL meshes;
+4. build the normal working URDF;
+5. open the result in the existing sw2robot editor.
+
+After that point the existing joint editor, coordinate-frame tooling, collision tooling and URDF/MJCF export path are shared with the SolidWorks backend.
+
+## Command-line workflow
 
 Generate the normal sw2robot package and URDF:
 
@@ -93,7 +111,7 @@ Inventor database length is centimetres and mass is kilograms. The backend conve
 - STL export units: metre
 - angular quantities: radians (no conversion)
 
-This avoids a common CAD-to-MuJoCo scale error.
+The shared mesh-inertia fallback also recognizes the Inventor `.stl` files as metre-native, so changing a density in the editor does not accidentally re-apply the SolidWorks millimetre scale.
 
 ## Current limitations
 
@@ -104,6 +122,7 @@ This is an MVP intended to get real Inventor robots into the existing editor qui
 - Classic Mate/Flush/Angle/Tangent constraint sets are not yet solved geometrically as deeply as the mature SolidWorks mate backend. A classic Insert constraint is recognized; other classic constraint pairs default to fixed and can be corrected in the existing editor.
 - Inventor Model States / iAssembly variants are not yet exposed as sw2robot configurations.
 - Mesh caching currently keys by source document path, not Model State.
+- The source-installed `sw2robot-web` command uses the Inventor-aware wrapper. The existing PyInstaller `build_exe.py` still targets the upstream webserver entry point and needs a small follow-up before an Inventor-aware standalone `.exe` is released.
 - This branch has unit tests for the CAD-independent conversions, but it still needs an end-to-end test on a real Inventor `.iam` installation/model before being considered production-ready.
 
 ## Recommended Inventor authoring style
