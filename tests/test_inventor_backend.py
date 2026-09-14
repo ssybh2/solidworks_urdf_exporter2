@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+from types import SimpleNamespace
 
 import pytest
 
@@ -11,6 +12,10 @@ from sw2robot.exporter.inventor_backend.com import (
     matrix_si,
     point_m,
     xyz_inertia,
+)
+from sw2robot.exporter.inventor_backend.extract import (
+    _assign_unique_link_names,
+    _robot_safe_name,
 )
 from sw2robot.exporter.inventor_backend.relationships import (
     INV_ROTATIONAL,
@@ -78,6 +83,36 @@ def test_inventor_stl_is_already_in_metres():
     assert mesh_scale_for_path("meshes/link.stl") == 1.0
     assert mesh_scale_for_path("meshes/composed.glb") == 1.0
     assert mesh_scale_for_path("meshes/solidworks.3dxml") == MM_TO_M
+
+
+def test_chinese_robot_name_does_not_collapse_to_plain_c_prefix():
+    got = _robot_safe_name("整体装配体")
+    assert got.startswith("robot_")
+    assert len(got) > len("robot_")
+    assert got == _robot_safe_name("整体装配体")
+
+
+def test_unicode_occurrences_that_collapse_to_same_ascii_get_unique_links():
+    comps = [
+        SimpleNamespace(name="大臂大孔:1", link_name=""),
+        SimpleNamespace(name="假铝柱:1", link_name=""),
+        SimpleNamespace(name="测试模型，壳体:1", link_name=""),
+        SimpleNamespace(name="DM-J4310:1", link_name=""),
+    ]
+    _assign_unique_link_names(comps)
+    names = [c.link_name for c in comps]
+    assert len(names) == len(set(names))
+    # The three Unicode names all sanitize to the same c_1 base in the shared
+    # helper, so every member of that collision group must receive a hash.
+    assert all(n.startswith("c_1_") for n in names[:3])
+    assert names[3] == "DM_J4310_1"
+
+
+def test_exact_duplicate_occurrence_names_are_still_forced_unique():
+    comps = [SimpleNamespace(name="零件:1", link_name=""),
+             SimpleNamespace(name="零件:1", link_name="")]
+    _assign_unique_link_names(comps)
+    assert comps[0].link_name != comps[1].link_name
 
 
 def test_rotational_joint_limits_stay_in_radians():
