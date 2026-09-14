@@ -80,16 +80,20 @@ def _prune_actuators(root, selected=None):
     """Remove MJCF actuators whose joint is not in ``selected``.
 
     With ``selected=None`` use the ACT_ naming convention if present; with no
-    convention either, do nothing. Returns a small report for tests/diagnostics.
+    convention either, do nothing. Returns a report used by tests and README
+    diagnostics.
     """
     actuator = root.find("actuator")
     if actuator is None:
-        return {"before": 0, "after": 0, "selected": []}
+        return {"before": 0, "after": 0, "selected": [], "mode": "none"}
     before = len(list(actuator))
+    mode = "configured" if selected is not None else None
     if selected is None:
         selected = _prefix_actuated_joints(root)
+        if selected is not None:
+            mode = "ACT_*"
     if selected is None:
-        return {"before": before, "after": before, "selected": []}
+        return {"before": before, "after": before, "selected": [], "mode": "auto"}
     selected = set(selected)
     for elem in list(actuator):
         joint = elem.get("joint")
@@ -99,7 +103,22 @@ def _prune_actuators(root, selected=None):
     active = [e.get("joint") for e in actuator if e.get("joint")]
     if after == 0:
         root.remove(actuator)
-    return {"before": before, "after": after, "selected": active}
+    return {"before": before, "after": after, "selected": active, "mode": mode}
+
+
+def _readme_with_report(text, report):
+    """Append the final actuator count after all MJCF post-processing layers."""
+    if not report or report.get("mode") in ("auto", "none"):
+        return text
+    marker = "## Final actuator selection"
+    if marker in text:
+        return text
+    active = ", ".join(report.get("selected") or []) or "(none)"
+    return (text.rstrip() + "\n\n" + marker + "\n\n"
+            + f"- Selection mode: `{report['mode']}`.\n"
+            + f"- Final MJCF actuators: {report['after']} of "
+              f"{report['before']} remaining movable-joint actuators.\n"
+            + f"- Active joints: {active}.\n")
 
 
 def _postprocess_path(out_root, pkg_dir, robot_name):
@@ -118,20 +137,44 @@ def _postprocess_path(out_root, pkg_dir, robot_name):
     if report["before"] != report["after"]:
         ET.indent(tree, space="  ")
         tree.write(xmls[0], encoding="unicode", xml_declaration=False)
+
+    readme = os.path.join(out_root, "README.md")
+    if os.path.isfile(readme) and report.get("mode") not in ("auto", "none"):
+        try:
+            with open(readme, encoding="utf-8") as f:
+                text = f.read()
+            with open(readme, "w", encoding="utf-8") as f:
+                f.write(_readme_with_report(text, report))
+        except OSError:
+            pass
     return report
 
 
 def _postprocess_files(files, pkg_dir, robot_name):
     selected = _configured_actuated_joints(pkg_dir, robot_name)
     out = []
-    for arc, data in files:
+    report = None
+    readme_index = None
+    for idx, (arc, data) in enumerate(files):
         if arc.lower().endswith(".xml") and "/mjcf/" in arc.replace("\\", "/"):
             root = ET.fromstring(data)
             report = _prune_actuators(root, selected)
             if report["before"] != report["after"]:
                 ET.indent(root, space="  ")
                 data = ET.tostring(root, encoding="utf-8")
+        if arc.lower().endswith("/readme.md"):
+            readme_index = idx
         out.append((arc, data))
+
+    if (report is not None and readme_index is not None
+            and report.get("mode") not in ("auto", "none")):
+        arc, data = out[readme_index]
+        try:
+            text = data.decode("utf-8")
+            out[readme_index] = (
+                arc, _readme_with_report(text, report).encode("utf-8"))
+        except UnicodeDecodeError:
+            pass
     return out
 
 
