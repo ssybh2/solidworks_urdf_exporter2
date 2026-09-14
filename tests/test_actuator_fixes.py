@@ -4,6 +4,7 @@ import yaml
 
 from sw2robot.exporter.actuator_fixes import (
     _configured_actuated_joints,
+    _loop_cfg_with_actuators,
     _prune_actuators,
 )
 
@@ -51,6 +52,26 @@ def test_configured_allow_list_follows_joint_rename(tmp_path):
     assert _configured_actuated_joints(tmp_path, "robot") == {
         "ACT_HIP_L", "wheel_joint"
     }
+
+
+def test_explicit_motor_can_override_automatic_loop_dependent_choice(tmp_path):
+    cfg = {
+        "closures": [{
+            "link_a": "a", "link_b": "b",
+            "point": [0, 0, 0], "axis": [1, 0, 0],
+        }],
+        "independent": ["auto_driver"],
+        "dependent": ["physical_motor", "passive"],
+    }
+    out = _loop_cfg_with_actuators(
+        str(tmp_path), cfg, {"physical_motor", "wheel_joint"})
+    assert out["closures"] == cfg["closures"]
+    assert out["independent"] == ["physical_motor", "wheel_joint"]
+    assert out["dependent"] == ["passive"]
+    # The source object is not mutated: other exporters still see the original
+    # automatic IK split.
+    assert cfg["independent"] == ["auto_driver"]
+    assert cfg["dependent"] == ["physical_motor", "passive"]
 
 
 def test_no_list_and_no_act_prefix_keeps_existing_automatic_result():
