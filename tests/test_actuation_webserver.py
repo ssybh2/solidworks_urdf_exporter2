@@ -7,6 +7,7 @@ import yaml
 from sw2robot.editor.actuation_webserver import (
     actuation_payload,
     set_actuated_joint,
+    set_mujoco_spawn_height,
 )
 
 
@@ -99,3 +100,39 @@ def test_fixed_joint_cannot_be_marked_motor(tmp_path):
         assert "not a movable joint" in str(exc)
     else:
         raise AssertionError("fixed joint unexpectedly accepted as Motor")
+
+
+def test_spawn_height_defaults_to_auto_and_persists_custom_value(tmp_path):
+    pkg = _package(tmp_path)
+    before = actuation_payload(str(pkg), "urdf/robot.urdf")
+    assert before["mujoco_spawn_height"] is None
+
+    after = set_mujoco_spawn_height(
+        str(pkg), "urdf/robot.urdf", 0.42)
+    assert after["mujoco_spawn_height"] == 0.42
+
+    cfg = yaml.safe_load(
+        (pkg / "robot.joints.yaml").read_text(encoding="utf-8"))
+    assert cfg["mujoco_spawn_height"] == 0.42
+
+
+def test_spawn_height_auto_removes_override_without_touching_other_config(tmp_path):
+    pkg = _package(tmp_path)
+    set_mujoco_spawn_height(str(pkg), "urdf/robot.urdf", 0.35)
+    final = set_mujoco_spawn_height(str(pkg), "urdf/robot.urdf", None)
+    assert final["mujoco_spawn_height"] is None
+
+    cfg = yaml.safe_load(
+        (pkg / "robot.joints.yaml").read_text(encoding="utf-8"))
+    assert "mujoco_spawn_height" not in cfg
+    assert cfg["joint_names"]["hip"] == "hip_motor"
+
+
+def test_spawn_height_rejects_negative_value(tmp_path):
+    pkg = _package(tmp_path)
+    try:
+        set_mujoco_spawn_height(str(pkg), "urdf/robot.urdf", -0.01)
+    except ValueError as exc:
+        assert ">= 0" in str(exc)
+    else:
+        raise AssertionError("negative MuJoCo spawn height unexpectedly accepted")
