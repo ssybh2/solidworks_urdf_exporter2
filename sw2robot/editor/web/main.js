@@ -35,6 +35,7 @@ import './diagnostics.js';
 import './keycast.js';
 import './pose-reset.js';
 import './loop-closure.js';
+import './unicode-labels.js';
 // ---- kick off -----------------------------------------------------------
 // live SolidWorks session: only attachable when THIS SERVER was started
 // from the user's own terminal (same login session); otherwise we show why
