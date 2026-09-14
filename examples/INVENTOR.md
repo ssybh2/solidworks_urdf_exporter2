@@ -155,6 +155,40 @@ Closed-loop dependent/passive joints do not receive actuators. The independent t
 
 The exporter also remaps closure endpoints through fixed-link merging, so a closure whose original URDF endpoint was merged into a rigid parent still references the surviving MJCF body.
 
+### Selecting exactly the active motors
+
+A movable joint and an actuated joint are not the same thing. Passive linkage pins must stay revolute/hinge joints but should not receive a MuJoCo actuator.
+
+For an exact final actuator list, add a top-level `actuated_joints:` list to the robot's `.joints.yaml`:
+
+```yaml
+actuated_joints:
+  - hip_fl_joint
+  - hip_fr_joint
+  - hip_rl_joint
+  - hip_rr_joint
+  - wheel_l_joint
+  - wheel_r_joint
+```
+
+`joint_names:` renames are applied before matching the final MJCF joint IDs, so the list may use the original internal joint IDs.
+
+As a naming-only alternative, if any final joint name begins with `ACT_`, the MJCF exporter treats the complete `ACT_*` set as the actuator allow-list. A useful convention is:
+
+```text
+ACT_HIP_FL
+ACT_HIP_FR
+ACT_HIP_RL
+ACT_HIP_RR
+ACT_WHEEL_L
+ACT_WHEEL_R
+
+PASS_KNEE_L
+PASS_KNEE_R
+```
+
+If neither `actuated_joints:` nor the `ACT_` convention is used, the existing closed-loop independent/dependent classification remains the default and no additional pruning is performed.
+
 ## Appearance export
 
 Inventor extraction writes:
