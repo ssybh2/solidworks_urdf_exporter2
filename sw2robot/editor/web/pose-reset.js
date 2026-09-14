@@ -102,12 +102,16 @@ export function restoreImportPose() {
   refreshVisibleJointControls();
   viewer.redraw();
 
-  // Tell the closed-loop module that this complete CAD pose, not the previous
-  // moved pose, is now the accepted branch reference. The custom event is
-  // intentionally separate from angle-change so no intermediate IK is run.
+  // This is an atomic restore. The dedicated event is useful to other tools;
+  // one synthetic angle-change with null detail then lets the closed-loop
+  // solver validate/synchronize its accepted branch ONCE, after every joint is
+  // already back at the imported pose. No intermediate half-restored pose is
+  // ever presented to IK.
   viewer.dispatchEvent(new CustomEvent('import-pose-restored', {
     detail: { angles: { ...importPose }, count: n },
   }));
+  viewer.dispatchEvent(new CustomEvent('angle-change', { detail: null }));
+
   op('resetPose', { n, mode: 'import' });
   log(`pose restored to CAD import snapshot (${n} joints)`, 'ok');
   return n > 0;
