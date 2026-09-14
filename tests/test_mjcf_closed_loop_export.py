@@ -2,6 +2,7 @@ import xml.etree.ElementTree as ET
 
 import numpy as np
 import pytest
+import yaml
 
 from sw2robot.exporter import exporter_fixes as F
 
@@ -87,6 +88,41 @@ def _cfg(link_a="a"):
     }
 
 
+def _write_primitive_export_pkg(tmp_path):
+    """Real exporter input: no CAD/mesh dependency, just primitive URDF shapes."""
+    urdf_dir = tmp_path / "urdf"
+    urdf_dir.mkdir(parents=True)
+
+    def link(name):
+        return f"""<link name="{name}">
+  <inertial><origin xyz="0 0 0"/><mass value="0.1"/>
+    <inertia ixx="0.001" ixy="0" ixz="0" iyy="0.001" iyz="0" izz="0.001"/>
+  </inertial>
+  <visual><geometry><box size="0.04 0.04 0.04"/></geometry></visual>
+  <collision><geometry><box size="0.04 0.04 0.04"/></geometry></collision>
+</link>"""
+
+    text = f"""<?xml version="1.0"?>
+<robot name="robot">
+{link('base_link')}
+{link('a')}
+{link('b')}
+<joint name="driver" type="revolute">
+  <origin xyz="0.1 0 0"/><parent link="base_link"/><child link="a"/>
+  <axis xyz="1 0 0"/><limit lower="-1" upper="1" effort="2" velocity="4"/>
+</joint>
+<joint name="passive" type="revolute">
+  <origin xyz="-0.1 0 0"/><parent link="base_link"/><child link="b"/>
+  <axis xyz="1 0 0"/><limit lower="-1" upper="1" effort="2" velocity="4"/>
+</joint>
+</robot>
+"""
+    (urdf_dir / "robot.urdf").write_text(text, encoding="utf-8")
+    (tmp_path / "loop_closures.yaml").write_text(
+        yaml.safe_dump(_cfg(), sort_keys=False), encoding="utf-8")
+    return tmp_path
+
+
 def test_closed_loop_becomes_two_connects_and_passive_actuator_is_removed(tmp_path):
     _write_working_urdf(tmp_path)
     root = _mjcf_root()
@@ -168,6 +204,21 @@ def test_no_loop_sidecar_keeps_all_actuators(tmp_path):
         "driver", "passive"
     ]
     assert report["actuator"]["after"] == 2
+
+
+def test_public_in_memory_export_reads_sidecar_and_restores_loop(tmp_path):
+    from sw2robot.exporter.mjcf_export import build_mjcf_package
+
+    pkg_dir = _write_primitive_export_pkg(tmp_path / "src")
+    pkg, files = build_mjcf_package(
+        str(pkg_dir), "robot", floating_base=False,
+        foot_contacts=False, imu_sensors=False,
+    )
+    assert pkg == "robot_mjcf"
+    xml = next(data for arc, data in files if arc.endswith("/mjcf/robot.xml"))
+    root = ET.fromstring(xml)
+    assert len(root.findall("./equality/connect")) == 2
+    assert [a.get("joint") for a in root.findall("./actuator/*")] == ["driver"]
 
 
 def test_postprocessed_closed_loop_compiles_in_mujoco_when_available(tmp_path):
