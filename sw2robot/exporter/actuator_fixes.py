@@ -16,6 +16,12 @@ matching the final MJCF joint names. An explicit selection is also injected into
 the closed-loop ``independent`` allow-list BEFORE the lower MJCF post-processor
 runs, so a physically actuated loop joint cannot be deleted merely because the
 automatic IK driver choice picked a different coordinate.
+
+Motor selection and motor *power* are intentionally separate.  Motor joints keep
+their MJCF actuators so a controller can use them later, but exported models start
+with MuJoCo actuation disabled unless ``mujoco_actuation_enabled: true`` is set in
+``joints.yaml``.  This makes an exported robot mechanically passive by default
+without losing any actuator interfaces.
 """
 
 from __future__ import annotations
@@ -39,19 +45,23 @@ def _config_path(pkg_dir, robot_name):
     return candidates[0] if len(candidates) == 1 else None
 
 
-def _configured_actuated_joints(pkg_dir, robot_name):
-    """Final-safe joint IDs from ``actuated_joints:``, or None when unspecified."""
+def _load_config(pkg_dir, robot_name):
     path = _config_path(pkg_dir, robot_name)
     if not path:
-        return None
+        return {}
     try:
         import yaml
-
         with open(path, encoding="utf-8") as f:
             cfg = yaml.safe_load(f) or {}
     except Exception:
-        return None
-    if not isinstance(cfg, dict) or "actuated_joints" not in cfg:
+        return {}
+    return cfg if isinstance(cfg, dict) else {}
+
+
+def _configured_actuated_joints(pkg_dir, robot_name):
+    """Final-safe joint IDs from ``actuated_joints:``, or None when unspecified."""
+    cfg = _load_config(pkg_dir, robot_name)
+    if "actuated_joints" not in cfg:
         return None
     values = cfg.get("actuated_joints")
     if not isinstance(values, (list, tuple, set)):
@@ -68,6 +78,20 @@ def _configured_actuated_joints(pkg_dir, robot_name):
         name = str(raw)
         result.add(safe_name(overrides.get(name, name)))
     return result
+
+
+def _startup_actuation_enabled(pkg_dir, robot_name):
+    """Whether exported actuators should apply force immediately at startup.
+
+    Absence is deliberately False: a Motor means "this joint has a control
+    interface", not "energise the servo as soon as the model is loaded".
+    """
+    raw = _load_config(pkg_dir, robot_name).get("mujoco_actuation_enabled", False)
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, str):
+        return raw.strip().lower() in {"1", "true", "yes", "on", "enable", "enabled"}
+    return bool(raw)
 
 
 def _working_urdf_act_prefix(pkg_dir, robot_name):
@@ -168,6 +192,40 @@ def _prune_actuators(root, selected=None):
     return {"before": before, "after": after, "selected": active, "mode": mode}
 
 
+def _set_startup_actuation(root, enabled):
+    """Set MuJoCo's global actuation flag without deleting any actuator.
+
+    ``enabled=False`` writes ``<option><flag actuation="disable"/></option>``.
+    ``enabled=True`` removes only that attribute, preserving any other option
+    flags. Returns True when the XML tree changed.
+    """
+    option = root.find("option")
+    if option is None:
+        if enabled:
+            return False
+        option = ET.Element("option")
+        children = list(root)
+        compiler = root.find("compiler")
+        insert_at = children.index(compiler) + 1 if compiler in children else 0
+        root.insert(insert_at, option)
+
+    flag = option.find("flag")
+    if enabled:
+        if flag is None or "actuation" not in flag.attrib:
+            return False
+        del flag.attrib["actuation"]
+        if not flag.attrib and len(flag) == 0 and not (flag.text or "").strip():
+            option.remove(flag)
+        return True
+
+    if flag is None:
+        flag = ET.SubElement(option, "flag")
+    if flag.get("actuation") == "disable":
+        return False
+    flag.set("actuation", "disable")
+    return True
+
+
 def _readme_with_report(text, report):
     """Append the final actuator count after all MJCF post-processing layers."""
     if not report or report.get("mode") in ("auto", "none"):
@@ -176,11 +234,14 @@ def _readme_with_report(text, report):
     if marker in text:
         return text
     active = ", ".join(report.get("selected") or []) or "(none)"
+    startup = "enabled" if report.get("actuation_enabled") else "disabled"
     return (text.rstrip() + "\n\n" + marker + "\n\n"
             + f"- Selection mode: `{report['mode']}`.\n"
             + f"- Final MJCF actuators: {report['after']} of "
               f"{report['before']} remaining movable-joint actuators.\n"
-            + f"- Active joints: {active}.\n")
+            + f"- Active joints: {active}.\n"
+            + f"- Actuation on startup: **{startup}**. Motor interfaces remain "
+              "present even when startup actuation is disabled.\n")
 
 
 def _postprocess_path(out_root, pkg_dir, robot_name, selected=None):
@@ -196,8 +257,12 @@ def _postprocess_path(out_root, pkg_dir, robot_name, selected=None):
     if not xmls:
         return None
     tree = ET.parse(xmls[0])
-    report = _prune_actuators(tree.getroot(), selected)
-    if report["before"] != report["after"]:
+    root = tree.getroot()
+    report = _prune_actuators(root, selected)
+    enabled = _startup_actuation_enabled(pkg_dir, robot_name)
+    report["actuation_enabled"] = enabled
+    startup_changed = _set_startup_actuation(root, enabled)
+    if report["before"] != report["after"] or startup_changed:
         ET.indent(tree, space="  ")
         tree.write(xmls[0], encoding="unicode", xml_declaration=False)
 
@@ -216,6 +281,7 @@ def _postprocess_path(out_root, pkg_dir, robot_name, selected=None):
 def _postprocess_files(files, pkg_dir, robot_name, selected=None):
     if selected is None:
         selected = _requested_actuated_joints(pkg_dir, robot_name)
+    enabled = _startup_actuation_enabled(pkg_dir, robot_name)
     out = []
     report = None
     readme_index = None
@@ -223,7 +289,9 @@ def _postprocess_files(files, pkg_dir, robot_name, selected=None):
         if arc.lower().endswith(".xml") and "/mjcf/" in arc.replace("\\", "/"):
             root = ET.fromstring(data)
             report = _prune_actuators(root, selected)
-            if report["before"] != report["after"]:
+            report["actuation_enabled"] = enabled
+            startup_changed = _set_startup_actuation(root, enabled)
+            if report["before"] != report["after"] or startup_changed:
                 ET.indent(root, space="  ")
                 data = ET.tostring(root, encoding="utf-8")
         if arc.lower().endswith("/readme.md"):
