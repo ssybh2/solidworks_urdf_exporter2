@@ -1,6 +1,12 @@
+import xml.etree.ElementTree as ET
+
 import yaml
 
-from sw2robot.exporter.appearance_fixes import _load_native_colors, _merged_colors
+from sw2robot.exporter.appearance_fixes import (
+    _apply_working_urdf_colors,
+    _load_native_colors,
+    _merged_colors,
+)
 from sw2robot.exporter.inventor_backend.extract import _appearance_hex
 
 
@@ -62,3 +68,29 @@ def test_malformed_native_colors_are_ignored(tmp_path):
         encoding="utf-8",
     )
     assert _load_native_colors(tmp_path) == {"ok": "#AABBCC"}
+
+
+def test_working_urdf_gets_native_color_without_overwriting_explicit_material(tmp_path):
+    path = tmp_path / "robot.urdf"
+    path.write_text(
+        """<robot name="r">
+<link name="arm">
+  <visual><geometry><box size="1 1 1"/></geometry></visual>
+</link>
+<link name="wheel">
+  <visual>
+    <geometry><cylinder radius="1" length="1"/></geometry>
+    <material name="explicit"><color rgba="1 0 0 1"/></material>
+  </visual>
+</link>
+</robot>""",
+        encoding="utf-8",
+    )
+
+    assert _apply_working_urdf_colors(
+        path, {"arm": "#2080E0", "wheel": "#00FF00"}) == 1
+    root = ET.parse(path).getroot()
+    arm = root.find("./link[@name='arm']/visual/material/color")
+    wheel = root.find("./link[@name='wheel']/visual/material/color")
+    assert arm.get("rgba") == "0.12549 0.501961 0.878431 1"
+    assert wheel.get("rgba") == "1 0 0 1"
