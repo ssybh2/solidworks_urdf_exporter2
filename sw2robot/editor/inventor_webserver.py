@@ -1,9 +1,11 @@
 """Inventor-aware wrapper around the existing sw2robot browser server.
 
 The upstream web server is deliberately left untouched: this module subclasses
-its request handler only for the three CAD-entry routes that need to know about
-Autodesk Inventor (.iam/.ipt).  Once extraction has produced graph.json + meshes,
-all editing/build/export routes are the original shared sw2robot implementation.
+its request handler only for the CAD-entry routes that need to know about
+Autodesk Inventor (.iam/.ipt), plus a tiny read-only loop-closure endpoint used
+by the browser constraint solver.  Once extraction has produced graph.json +
+meshes, all editing/build/export routes are the original shared sw2robot
+implementation.
 """
 from __future__ import annotations
 
@@ -22,6 +24,36 @@ _INVENTOR_STAGES = ["connect Inventor", "extract assembly",
 
 def _is_inventor(path):
     return str(path or "").lower().endswith(_INVENTOR_EXTS)
+
+
+def _loop_closure_payload(pkg_dir):
+    """Return the current package's persisted closed-loop constraints.
+
+    ``export.build`` writes ``loop_closures.yaml`` whenever the CAD relationship
+    graph contains a movable non-tree edge.  The browser still loads a legal
+    tree-shaped URDF, then uses this sidecar to solve the passive coordinates and
+    restore the CAD loop at runtime.
+    """
+    empty = {"closures": [], "dependent": [], "independent": []}
+    if not pkg_dir:
+        return empty
+    path = os.path.join(str(pkg_dir), "loop_closures.yaml")
+    if not os.path.isfile(path):
+        return empty
+    try:
+        import yaml
+        with open(path, encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
+    except Exception as e:
+        return {**empty, "error": f"could not read loop_closures.yaml: {e}"}
+    closures = data.get("closures") if isinstance(data, dict) else None
+    if not isinstance(closures, list):
+        return empty
+    return {
+        "closures": closures,
+        "dependent": list(data.get("dependent") or []),
+        "independent": list(data.get("independent") or []),
+    }
 
 
 def _inventor_progress(msg):
@@ -146,7 +178,7 @@ def _send_fs(handler, target):
 
 
 class _InventorHandler(_ws._Handler):
-    """Only intercept CAD discovery/extraction; delegate everything else."""
+    """Intercept Inventor entry points + loop sidecar; delegate everything else."""
 
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
@@ -156,6 +188,11 @@ class _InventorHandler(_ws._Handler):
         if path == "/api/fs":
             target = (query.get("path") or [""])[0]
             return _send_fs(self, target)
+
+        if path == "/api/loop_closures":
+            # The endpoint is intentionally read-only and package-local.  The
+            # sidecar contains no arbitrary path supplied by the browser.
+            return self._send_json(_loop_closure_payload(type(self).pkg_dir))
 
         if path == "/api/configurations":
             target = (query.get("path") or [""])[0]
