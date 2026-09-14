@@ -7,27 +7,32 @@ we deliberately default to:
 
 * no derived joint damping (``backemf_damping=False``),
 * no synthetic foot contact spheres (``foot_contacts=False``),
-* source-mesh collision geometry (``collision='copy'``), and
-* selective robot self-collision: non-adjacent bodies collide, while directly
-  joint-connected bodies and CAD closed-loop endpoints are explicitly excluded.
+* CAD-faithful collision using fine CoACD convex decomposition, and
+* selective robot self-collision, including directly joint-connected bodies.
 
-The last item is important for CAD mechanisms.  Disabling self-collision globally
-lets different links pass through each other; enabling every body pair blindly can
-make joint interfaces fight each other.  The selective policy keeps the physical
-collision checks that prevent remote links from interpenetrating while suppressing
-only body pairs that are mechanically connected by a tree joint or restored loop
-hinge.
+A single MuJoCo ``type=\"mesh\"`` geom is NOT an exact triangle-mesh collider:
+MuJoCo collides it through its convex hull.  Therefore the normal Web/CLI MJCF
+path decomposes each CAD collision mesh into a union of many convex mesh geoms
+(``collision='coacd'``, ``coacd_quality='fine'``).  This preserves concavities
+far better than one convex hull and never substitutes boxes/spheres/cylinders.
+
+Self-collision also needs special handling.  MuJoCo filters direct parent-child
+body collisions by default, which lets adjacent links pass through one another.
+The default policy disables that parent filter and enables robot-vs-robot contact
+for all collision geoms.  Only body pairs tied together by the restored CAD
+closed-loop equality hinges are explicitly excluded, because those equality
+constraints already define the mechanical connection and simultaneous contact
+there can overconstrain the loop.
 
 Damping remains a code-level interface.  An advanced caller can explicitly pass
 ``backemf_damping=True`` to restore the converter's effort/velocity-derived
 joint damping, or ``motor_damping=<scalar>`` / ``{joint: value}`` to assign a
 specific damping to the final Motor joints after actuator pruning.
 
-Synthetic foot contacts remain opt-in with ``foot_contacts=True``.  Approximate
-collision modes remain available only when a caller deliberately passes
-``strict_mesh_collision=False`` together with e.g. ``collision='coacd'``.  The
-normal Web/CLI MJCF path therefore cannot silently turn CAD meshes into boxes,
-hulls or CoACD parts because of a stale collision selector.
+``strict_mesh_collision`` is retained as a compatibility policy flag.  Its
+default ``True`` now means the CAD-faithful fine-CoACD path described above.
+Passing ``strict_mesh_collision=False`` restores the caller-controlled collision
+mode (``copy``, ``hull``, ``coacd``, primitive modes, ...).
 
 The legacy ``self_collision`` bool remains available to code callers: explicitly
 passing it preserves the converter's old full-on/full-off behaviour.  The new
@@ -81,9 +86,11 @@ def _prepare_kwargs(kwargs):
 
     strict_mesh = bool(out.pop("strict_mesh_collision", True))
     if strict_mesh:
-        # 'copy' reuses the CAD/visual mesh as the collision STL without any
-        # primitive fitting, convex hull or CoACD approximation by this exporter.
-        out["collision"] = "copy"
+        # MuJoCo convexifies each individual mesh geom.  Fine CoACD therefore
+        # turns one concave CAD mesh into many convex mesh geoms whose UNION is
+        # much closer to the original surface than a single convex hull.
+        out["collision"] = "coacd"
+        out["coacd_quality"] = "fine"
     else:
         out.setdefault("collision", "copy")
 
@@ -96,9 +103,8 @@ def _prepare_kwargs(kwargs):
 
     if selective_self_collision:
         # Ask the converter for its stable no-self-collision form, then enable
-        # exactly the desired body pairs below.  This avoids depending on how a
-        # particular scikit-robot version implements its blanket self-collision
-        # switch while still preserving the legacy bool for explicit callers.
+        # exactly the desired contacts below.  This keeps behaviour independent
+        # of scikit-robot's blanket self-collision implementation.
         out["self_collision"] = False
 
     motor_damping = out.pop("motor_damping", None)
@@ -199,6 +205,32 @@ def _loop_connected_body_pairs(root):
     return pairs
 
 
+def _ensure_option_flag(root):
+    option = root.find("option")
+    changed = False
+    if option is None:
+        option = ET.Element("option")
+        children = list(root)
+        compiler = root.find("compiler")
+        idx = children.index(compiler) + 1 if compiler in children else 0
+        root.insert(idx, option)
+        changed = True
+    flag = option.find("flag")
+    if flag is None:
+        flag = ET.SubElement(option, "flag")
+        changed = True
+    return flag, changed
+
+
+def _disable_parent_collision_filter(root):
+    """Allow collision checks between bodies in a direct parent-child relation."""
+    flag, changed = _ensure_option_flag(root)
+    if flag.get("filterparent") != "disable":
+        flag.set("filterparent", "disable")
+        changed = True
+    return changed
+
+
 def _ensure_contact(root):
     contact = root.find("contact")
     if contact is not None:
@@ -220,26 +252,36 @@ def _ensure_contact(root):
 
 
 def _apply_selective_self_collision(root):
-    """Enable robot-vs-robot collision except at mechanical connections.
+    """Enable robot self-collision, including adjacent tree links.
 
     Collision geoms emitted by the converter are group 3.  They keep contype bit
     1 (value 2) and receive conaffinity bits 0+1 (value 3):
 
     * robot vs ground (1/1) still collides via ``1 & 3``;
-    * robot vs robot now collides via ``2 & 3``.
+    * robot vs robot collides via ``2 & 3``.
 
-    ``<contact><exclude>`` entries are then added for every direct tree
-    parent-child body pair and every body pair tied together by the restored CAD
-    loop equality constraints.  Those interfaces intentionally overlap/touch at
-    their joints and should not generate contact forces against the mechanism.
+    MuJoCo normally filters direct parent-child collisions before the bitmask
+    test, so ``filterparent`` is explicitly disabled.  This is required for a
+    hinge child to be physically stopped by the geometry of its parent instead
+    of being allowed to rotate through it.
+
+    We exclude only restored CAD loop-equality endpoint pairs.  Those bodies are
+    already tied together by equality constraints; applying collision at the
+    same virtual hinge can overconstrain the closed loop.  Ordinary tree-joint
+    parent-child pairs are deliberately NOT excluded.
 
     Returns ``(changed, report)``.
     """
     worldbody = root.find("worldbody")
     if worldbody is None:
-        return False, {"collision_geoms": 0, "excluded_pairs": []}
+        return False, {
+            "collision_geoms": 0,
+            "excluded_pairs": [],
+            "tree_pairs": [],
+            "filterparent_disabled": False,
+        }
 
-    changed = False
+    changed = _disable_parent_collision_filter(root)
     collision_geoms = 0
     for body in worldbody.iter("body"):
         for geom in body.findall("geom"):
@@ -253,8 +295,8 @@ def _apply_selective_self_collision(root):
                 geom.set("conaffinity", _ROBOT_CONAFFINITY_SELF)
                 changed = True
 
-    excluded = _tree_connected_body_pairs(worldbody)
-    excluded.update(_loop_connected_body_pairs(root))
+    tree_pairs = _tree_connected_body_pairs(worldbody)
+    excluded = _loop_connected_body_pairs(root)
     excluded = {pair for pair in excluded if pair is not None}
 
     if excluded:
@@ -278,6 +320,8 @@ def _apply_selective_self_collision(root):
     return changed, {
         "collision_geoms": collision_geoms,
         "excluded_pairs": sorted(excluded),
+        "tree_pairs": sorted(tree_pairs),
+        "filterparent_disabled": True,
     }
 
 
