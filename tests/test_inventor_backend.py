@@ -74,7 +74,6 @@ class _Matrix:
 
 class _MassPropsFallback:
     def XYZMomentsOfInertia(self, *args):
-        # Autodesk API order: Ixx, Iyy, Izz, Ixy, Iyz, Ixz (kg*cm^2).
         return (1.0, 2.0, 3.0, 4.0, 5.0, 6.0)
 
 
@@ -87,7 +86,7 @@ class _Rotational:
 class _Slider:
     HasLinearPositionStartLimit = True
     HasLinearPositionEndLimit = True
-    LinearPositionStartLimit = -12.5  # cm in the Inventor database
+    LinearPositionStartLimit = -12.5
     LinearPositionEndLimit = 35.0
 
 
@@ -142,6 +141,17 @@ def test_chinese_robot_name_does_not_collapse_to_plain_c_prefix():
     assert got.startswith("robot_")
     assert len(got) > len("robot_")
     assert got == _robot_safe_name("整体装配体")
+
+
+def test_chinese_robot_name_with_digits_does_not_become_c_2():
+    got = _robot_safe_name("整体装配体2")
+    assert got.startswith("robot_")
+    assert got != "c_2"
+    assert got == _robot_safe_name("整体装配体2")
+
+
+def test_mixed_ascii_unicode_robot_name_keeps_ascii_part():
+    assert _robot_safe_name("robot_整机2") == "robot_2"
 
 
 def test_unicode_occurrences_that_collapse_to_same_ascii_get_unique_links():
