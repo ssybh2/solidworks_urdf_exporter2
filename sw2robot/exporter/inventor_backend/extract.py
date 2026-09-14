@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
+from collections import Counter
 
 from ..model import safe_name
 from ..state import ComponentState, GraphState
@@ -13,8 +15,61 @@ from .relationships import classic_constraints, native_joints
 GRAPH_FILE = "graph.json"
 
 
+def _short_hash(text):
+    """Stable ASCII suffix used when CAD names collapse to the same safe name."""
+    return hashlib.sha1(str(text).encode("utf-8")).hexdigest()[:8]
+
+
+def _robot_safe_name(raw):
+    """Readable ASCII robot/package name, including Unicode-only Inventor files.
+
+    ``model.safe_name`` intentionally strips non-ASCII characters.  A Chinese
+    filename such as ``整体装配体.iam`` therefore used to become just ``c_``.
+    That is legal but confusing, so give Unicode-only names a stable robot hash.
+    """
+    base = safe_name(str(raw))
+    if base == "c_" and any(ord(ch) > 127 for ch in str(raw)):
+        return f"robot_{_short_hash(raw)}"
+    return base
+
+
+def _assign_unique_link_names(components):
+    """Assign collision-free ASCII ``link_name`` values to Inventor occurrences.
+
+    Inventor occurrence names are allowed to contain Unicode.  The shared
+    ``safe_name`` helper strips all non-ASCII text, so names such as
+    ``大臂大孔:1`` and ``假IMU:1`` can both collapse to ``c_1``/``IMU_1``-like
+    identifiers.  Duplicate URDF link names corrupt the kinematic tree: a joint
+    can effectively point a link to itself, which later causes Three.js/skrobot
+    recursion failures.
+
+    Keep the short readable form when it is unique.  Only a collision group gets
+    an 8-hex stable suffix derived from the original occurrence name.
+    """
+    bases = [safe_name(c.name) for c in components]
+    counts = Counter(bases)
+    used = set()
+    for index, (comp, base) in enumerate(zip(components, bases), 1):
+        candidate = base
+        if counts[base] > 1:
+            candidate = f"{base}_{_short_hash(comp.name)}"
+        # Inventor normally guarantees unique occurrence names, but guard exact
+        # duplicate names too so malformed/imported assemblies still cannot emit
+        # duplicate URDF links.
+        if candidate in used:
+            candidate = f"{candidate}_{index}"
+            while candidate in used:
+                candidate += "_x"
+        comp.link_name = candidate
+        used.add(candidate)
+
+    if len(used) != len(components):
+        raise ValueError("Inventor link-name uniquing failed")
+
+
 def _package_paths(cad_path, out_dir, robot_name):
-    robot_name = safe_name(robot_name or os.path.splitext(os.path.basename(cad_path))[0])
+    raw_name = robot_name or os.path.splitext(os.path.basename(cad_path))[0]
+    robot_name = _robot_safe_name(raw_name)
     out_dir = os.path.abspath(out_dir or os.path.join(os.getcwd(), "output"))
     return robot_name, os.path.join(out_dir, robot_name)
 
@@ -101,6 +156,13 @@ def extract_inventor(cad_path, out_dir=None, robot_name=None,
                         frames = ucs_states(safe_prop(occ, "Definition"))
                         if frames:
                             part_frames[comp.part_path] = frames
+
+                # Do this before any tree/build work.  Relationship records use
+                # the raw occurrence ``name`` and are therefore unaffected; only
+                # the eventual URDF-facing link names are made collision-free.
+                _assign_unique_link_names(components)
+                unique_count = len({c.link_name for c in components})
+                _emit(progress, f"unique URDF link names: {unique_count}/{len(components)}")
 
                 names = {c.name for c in components}
                 edges, limits, ground, covered, warnings = native_joints(definition, names)
