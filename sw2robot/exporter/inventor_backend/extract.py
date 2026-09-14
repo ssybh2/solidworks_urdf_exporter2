@@ -19,6 +19,13 @@ def _package_paths(cad_path, out_dir, robot_name):
     return robot_name, os.path.join(out_dir, robot_name)
 
 
+def _emit(progress, msg):
+    line = f"[inventor] {msg}"
+    print(line)
+    if progress is not None:
+        progress(msg)
+
+
 def _component_state(occ, meshes_dir, app, cache):
     name = occ_name(occ)
     doc, definition = occ_doc(occ), safe_prop(occ, "Definition")
@@ -42,8 +49,12 @@ def _component_state(occ, meshes_dir, app, cache):
 
 
 def extract_inventor(cad_path, out_dir=None, robot_name=None,
-                     visible=False, attach=False):
-    """Extract an Inventor IAM/IPT into the CAD-independent sw2robot package."""
+                     visible=False, attach=False, progress=None):
+    """Extract an Inventor IAM/IPT into the CAD-independent sw2robot package.
+
+    ``progress`` is an optional callable receiving human-readable phase strings;
+    the browser server uses it for live progress and cooperative cancellation.
+    """
     cad_path = os.path.abspath(cad_path)
     ext = os.path.splitext(cad_path)[1].lower()
     if ext not in (".iam", ".ipt"):
@@ -52,7 +63,7 @@ def extract_inventor(cad_path, out_dir=None, robot_name=None,
     meshes_dir = os.path.join(pkg_dir, "meshes")
     os.makedirs(meshes_dir, exist_ok=True)
 
-    print(f"[inventor] opening {os.path.basename(cad_path)} ...")
+    _emit(progress, f"opening {os.path.basename(cad_path)} ...")
     with Inventor(visible=visible, attach=attach) as inv:
         doc = inv.open(cad_path)
         try:
@@ -62,6 +73,7 @@ def extract_inventor(cad_path, out_dir=None, robot_name=None,
             if ext == ".ipt":
                 mass, com, inertia, overridden = mass_props(definition)
                 mesh_abs = os.path.join(meshes_dir, mesh_name(cad_path))
+                _emit(progress, "exporting mesh 1/1: " + os.path.basename(cad_path))
                 export_stl(inv.app, doc, mesh_abs)
                 graph = GraphState(
                     robot_name=robot_name, source_assembly=cad_path,
@@ -73,12 +85,14 @@ def extract_inventor(cad_path, out_dir=None, robot_name=None,
                         sw_mass_overridden=overridden)],
                     ground=[robot_name], coordinate_systems=ucs_states(definition))
             else:
+                _emit(progress, "reading assembly occurrences and joints ...")
                 occs = [o for o in iter_collection(safe_prop(definition, "Occurrences"))
                         if not bool(safe_prop(o, "Suppressed", False))]
-                print(f"[inventor] components: {len(occs)}")
+                _emit(progress, f"components: {len(occs)}")
                 cache, components, hidden, part_frames = {}, [], [], {}
                 for i, occ in enumerate(occs, 1):
-                    print(f"[inventor] mesh {i}/{len(occs)}: {occ_name(occ)}")
+                    _emit(progress,
+                          f"exporting mesh {i}/{len(occs)}: {occ_name(occ)}")
                     comp = _component_state(occ, meshes_dir, inv.app, cache)
                     components.append(comp)
                     if not bool(safe_prop(occ, "Visible", True)):
@@ -99,9 +113,9 @@ def extract_inventor(cad_path, out_dir=None, robot_name=None,
                 if not ground and components:
                     ground.add(components[0].name)
                 for warning in warnings:
-                    print(f"[inventor] WARN: {warning}")
-                print(f"[inventor] relationships: {len(edges)} edge(s), "
-                      f"{len(limits)} movable")
+                    _emit(progress, f"WARN: {warning}")
+                _emit(progress, f"relationships: {len(edges)} edge(s), "
+                                f"{len(limits)} movable")
                 graph = GraphState(
                     robot_name=robot_name, source_assembly=cad_path,
                     components=components, edges=list(edges.values()),
@@ -111,7 +125,7 @@ def extract_inventor(cad_path, out_dir=None, robot_name=None,
 
             graph_path = os.path.join(pkg_dir, GRAPH_FILE)
             graph.save(graph_path)
-            print(f"[inventor] graph: {graph_path}")
+            _emit(progress, f"graph: {graph_path}")
         finally:
             inv.close(doc)
     return pkg_dir
