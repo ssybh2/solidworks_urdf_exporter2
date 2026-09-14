@@ -33,6 +33,7 @@ import './root-frame.js';
 import './file-browser.js';
 import './diagnostics.js';
 import './keycast.js';
+import './pose-reset.js';
 import './loop-closure.js';
 // ---- kick off -----------------------------------------------------------
 // live SolidWorks session: only attachable when THIS SERVER was started
