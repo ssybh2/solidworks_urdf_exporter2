@@ -8,7 +8,7 @@ from sw2robot.exporter.mjcf_validation_defaults import (
 )
 
 
-def test_validation_defaults_use_zero_damping_and_source_mesh_collision():
+def test_validation_defaults_use_zero_damping_and_strict_source_mesh_collision():
     kwargs, motor_damping, strip_default = _prepare_kwargs({})
     assert kwargs["backemf_damping"] is False
     assert kwargs["foot_contacts"] is False
@@ -17,16 +17,25 @@ def test_validation_defaults_use_zero_damping_and_source_mesh_collision():
     assert strip_default is True
 
 
-def test_explicit_damping_and_collision_interfaces_are_preserved():
+def test_strict_mesh_default_overrides_approximate_collision_mode():
+    kwargs, _motor_damping, _strip_default = _prepare_kwargs({
+        "collision": "box",
+    })
+    assert kwargs["collision"] == "copy"
+
+
+def test_explicit_damping_and_advanced_collision_interfaces_are_preserved():
     kwargs, motor_damping, strip_default = _prepare_kwargs({
         "backemf_damping": True,
         "foot_contacts": True,
+        "strict_mesh_collision": False,
         "collision": "coacd",
         "motor_damping": 0.25,
     })
     assert kwargs["backemf_damping"] is True
     assert kwargs["foot_contacts"] is True
     assert kwargs["collision"] == "coacd"
+    assert "strict_mesh_collision" not in kwargs
     assert motor_damping == 0.25
     assert strip_default is False
 
