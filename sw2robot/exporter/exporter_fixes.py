@@ -24,9 +24,9 @@ post-process, so they cannot drift apart.
 
 from __future__ import annotations
 
-from functools import wraps
 import os
 import xml.etree.ElementTree as ET
+from functools import wraps
 
 import numpy as np
 
