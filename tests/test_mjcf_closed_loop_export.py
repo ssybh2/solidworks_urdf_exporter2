@@ -54,19 +54,22 @@ def _mjcf_root():
     return ET.fromstring("""<mujoco>
 <worldbody>
   <body name="base_link">
+    <geom type="sphere" size="0.01" density="1000" contype="0" conaffinity="0"/>
     <body name="a" pos="0.1 0 0">
       <joint name="driver" type="hinge" axis="1 0 0"/>
-      <geom name="a_visual" group="2" contype="0" rgba="0 0 0 1"/>
+      <geom name="a_visual" type="sphere" size="0.01" density="1000"
+            group="2" contype="0" conaffinity="0" rgba="0 0 0 1"/>
     </body>
     <body name="b" pos="-0.1 0 0">
       <joint name="passive" type="hinge" axis="1 0 0"/>
-      <geom name="b_visual" group="2" contype="0" rgba="0 0 0 1"/>
+      <geom name="b_visual" type="sphere" size="0.01" density="1000"
+            group="2" contype="0" conaffinity="0" rgba="0 0 0 1"/>
     </body>
   </body>
 </worldbody>
 <actuator>
-  <position name="driver_act" joint="driver"/>
-  <position name="passive_act" joint="passive"/>
+  <position name="driver_act" joint="driver" kp="10"/>
+  <position name="passive_act" joint="passive" kp="10"/>
 </actuator>
 </mujoco>""")
 
@@ -165,3 +168,20 @@ def test_no_loop_sidecar_keeps_all_actuators(tmp_path):
         "driver", "passive"
     ]
     assert report["actuator"]["after"] == 2
+
+
+def test_postprocessed_closed_loop_compiles_in_mujoco_when_available(tmp_path):
+    mujoco = pytest.importorskip("mujoco")
+    _write_working_urdf(tmp_path)
+    root = _mjcf_root()
+    F._postprocess_root(
+        root,
+        pkg_dir=str(tmp_path),
+        robot_name="robot",
+        loop_closures=_cfg(),
+        mjcf_mod=_FakeMjcf,
+    )
+
+    model = mujoco.MjModel.from_xml_string(ET.tostring(root, encoding="unicode"))
+    assert model.neq == 2
+    assert model.nu == 1
