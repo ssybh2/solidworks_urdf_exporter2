@@ -66,7 +66,7 @@ function ensureActuationStyle() {
     .jp-actuation-ui .act-choice.active.passive {
       color:#f0f2f4; background:#4a5059; box-shadow:inset 0 0 0 1px #777f8a;
     }
-    .jp-actuation-ui .act-choice:disabled { cursor:wait; opacity:.62; }
+    .jp-actuation-ui .act-choice:disabled { cursor:default; opacity:.62; }
     .jp-actuation-ui .act-mode {
       color:#89919c; font-size:10px; white-space:nowrap;
     }
@@ -77,7 +77,8 @@ function ensureActuationStyle() {
 }
 
 function actuationJointName(panel) {
-  const name = panel.querySelector('.jp-name');
+  // There are two .jp-name elements (link then joint). Pick the joint one.
+  const name = panel.querySelector('.jp-name[data-kind="joint"]');
   return (name?.dataset?.old || name?.textContent || '').trim();
 }
 
@@ -127,7 +128,7 @@ async function fetchActuation(url, options = {}, timeoutMs = 5000) {
   }
 }
 
-async function wireActuationRow(panel) {
+function wireActuationRow(panel) {
   if (!panel || panel.querySelector('.jp-actuation-ui') || !actuationMovable(panel)) {
     return;
   }
@@ -145,40 +146,16 @@ async function wireActuationRow(panel) {
       '<button type="button" class="act-choice passive" data-act="passive" ' +
         'title="Passive: keep the movable joint but export no actuator">Passive</button>' +
     '</span>' +
-    '<span class="act-mode">…</span>';
+    '<span class="act-mode">checking</span>';
   const typeRow = panel.querySelector('.jp-type')?.closest('.jp-row');
   if (typeRow) { typeRow.insertAdjacentElement('afterend', row); }
   else { panel.appendChild(row); }
 
   const buttons = [...row.querySelectorAll('.act-choice')];
-  buttons.forEach(b => { b.disabled = true; });
-  try {
-    const payload = await fetchActuation('/api/actuation?v=' + Date.now());
-    // The panel can be rebuilt while the request is in flight. Never use a
-    // global request counter: it can invalidate the currently-visible row and
-    // leave its buttons disabled forever. Only this row's DOM lifetime matters.
-    if (!row.isConnected || actuationJointName(panel) !== joint) { return; }
-    if (!payload.supported || !(payload.movable || []).includes(joint)) {
-      row.remove();
-      return;
-    }
-    applyActuationState(row, payload, joint);
-  } catch (e) {
-    if (!row.isConnected) { return; }
-    const mode = row.querySelector('.act-mode');
-    mode.textContent = 'API error';
-    mode.className = 'act-mode error';
-    row.title = e.message ?? String(e);
-    if (typeof log === 'function') {
-      log(`Motor/Passive status failed: ${e.message ?? e}`, 'err');
-    }
-  } finally {
-    // Even on an API error, never trap the UI in cursor:wait. Clicking a choice
-    // retries through POST and will show a concrete save error if the backend is
-    // genuinely unavailable.
-    if (row.isConnected) { buttons.forEach(b => { b.disabled = false; }); }
-  }
 
+  // IMPORTANT: attach click handlers BEFORE asking the backend for status and
+  // leave the buttons enabled. Status discovery is advisory; it must never make
+  // the user wait or trap the UI in a disabled/cursor-wait state.
   for (const button of buttons) {
     button.addEventListener('click', async () => {
       const wantMotor = button.dataset.act === 'motor';
@@ -212,6 +189,28 @@ async function wireActuationRow(panel) {
       }
     });
   }
+
+  // Discover the effective state in the background. Never disable the controls
+  // while this GET is pending: a slow/missing backend must not block editing.
+  fetchActuation('/api/actuation?v=' + Date.now())
+    .then(payload => {
+      if (!row.isConnected || actuationJointName(panel) !== joint) { return; }
+      if (!payload.supported || !(payload.movable || []).includes(joint)) {
+        row.remove();
+        return;
+      }
+      applyActuationState(row, payload, joint);
+    })
+    .catch(e => {
+      if (!row.isConnected) { return; }
+      const mode = row.querySelector('.act-mode');
+      mode.textContent = 'API error';
+      mode.className = 'act-mode error';
+      row.title = e.message ?? String(e);
+      if (typeof log === 'function') {
+        log(`Motor/Passive status failed: ${e.message ?? e}`, 'err');
+      }
+    });
 }
 
 function scanActuationPanel() {
@@ -238,6 +237,7 @@ export function renderSwStatus() {
   if (st.active_assembly) {
     btn.style.display = '';
     btn.title = st.active_assembly;
+    // the path/filename is a real on-disk identifier -- never translated
     el.textContent = (st.dirty ? t('sw.unsaved') : '') +
       t('sw.open', { name: st.active_assembly.split(/[\\/]/).pop() });
   } else if (st.running && !st.attachable) {
