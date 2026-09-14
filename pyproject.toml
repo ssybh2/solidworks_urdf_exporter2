@@ -57,12 +57,6 @@ dependencies = [
     "lxml",
     "pydantic>=2",
     "pyyaml>=6",
-    # MuJoCo collides a normal mesh geom through its convex hull.  The default
-    # MJCF export therefore uses fine CoACD decomposition so concave CAD links
-    # are represented as a union of convex mesh geoms instead of one oversized
-    # hull.  Current CoACD wheels cover Windows x86-64, Linux x86-64/aarch64 and
-    # macOS arm64 for CPython 3.9+.
-    "coacd>=1.0.11",
     # rotation/transform math (rpy<->matrix), FK, inertials, the per-mesh
     # primitive API behind the ROS-export --collision fitting, and the URDF
     # surgery the exporter and the editor run on (>=0.3.29 for
@@ -87,11 +81,14 @@ dependencies = [
 ui = [
     "python-fcl>=0.7",
 ]
-# Backward-compatible extra name.  CoACD is now a core dependency because the
-# default MuJoCo export relies on fine convex decomposition for CAD-faithful
-# collision.  Keeping the extra means existing `pip install sw2robot[coacd]`
-# commands continue to work.
-coacd = []
+# optional CoACD approximate convex decomposition for <collision> meshes in the
+# ROS export (the `--collision coacd` CLI flag / the web "CoACD collision" box).
+# A heavy compiled wheel, so it is its own opt-in extra; the export degrades to
+# the plain visual-mesh collision (and a clear error if 'coacd' is requested
+# without it) when this is not installed.
+coacd = [
+    "coacd",
+]
 # extra deps the test suite uses to validate exported ROS packages without a ROS
 # install: catkin_pkg parses/validates package.xml the way catkin/colcon do
 # (skrobot, used to load the exported URDF + resolve package:// meshes, is now a
