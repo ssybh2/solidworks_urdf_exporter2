@@ -5,13 +5,13 @@ build-backend = "hatchling.build"
 [project]
 name = "sw2robot"
 version = "0.4.3"
-description = "SolidWorks assembly -> URDF exporter with a browser-based editor"
+description = "SolidWorks/Inventor CAD -> URDF exporter with a browser-based editor"
 readme = "README.md"
 requires-python = ">=3.12"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 authors = [{ name = "Iori Yanokura", email = "ab.ioryz@gmail.com" }]
-keywords = ["solidworks", "urdf", "robotics", "cad", "ros", "exporter"]
+keywords = ["solidworks", "inventor", "urdf", "mujoco", "robotics", "cad", "ros", "exporter"]
 # NOTE: no "License :: OSI Approved :: ..." classifier on purpose -- PEP 639
 # forbids pairing one with the SPDX `license = "Apache-2.0"` above, and both
 # twine --strict and PyPI reject the upload if you do.
@@ -68,7 +68,7 @@ dependencies = [
     # compile in MuJoCo, and has neither joint_damping='backemf' nor
     # home_base_height='auto', which sw2robot asks it for by name.
     "scikit-robot>=0.3.34",
-    # only the EXTRACT step (driving SolidWorks COM) needs this, and only on Windows
+    # CAD extraction through SolidWorks or Autodesk Inventor COM needs this on Windows.
     "pywin32>=306; sys_platform == 'win32'",
 ]
 
@@ -107,8 +107,9 @@ Releases = "https://github.com/jsk-ros-pkg/solidworks_urdf_exporter2/releases"
 
 [project.scripts]
 sw2urdf = "sw2robot.exporter.export:main"     # extract + build (needs SolidWorks)
+inv2robot = "sw2robot.exporter.inventor:main"  # Inventor IAM/IPT -> graph + URDF/MJCF
 sw2robot = "sw2robot.editor.cli:main"        # headless build/edit/export CLI
-sw2robot-web = "sw2robot.editor.webserver:main"  # the browser editor server
+sw2robot-web = "sw2robot.editor.actuation_webserver:main"  # SolidWorks + Inventor browser editor + Motor/Passive
 
 # hatchling's default sdist sweeps in every non-gitignored path in the repo --
 # INCLUDING untracked scratch directories.  A local docs/ tree took the sdist

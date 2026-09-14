@@ -93,3 +93,186 @@ collModeSel?.addEventListener('change', () => {
 });
 updateCollUI();
 
+// ---- MuJoCo spawn height -------------------------------------------------
+// Empty = Auto: the exporter copies its mesh-derived safe home height into the
+// floating base's DEFAULT pose.  A number is an absolute world-Z in metres and
+// also replaces the home keyframe Z, so launch_from_path and Reset/Home agree.
+let spawnRefreshSeq = 0;
+
+function ensureSpawnStyle() {
+  if (document.getElementById('sw2robot-spawn-height-style')) { return; }
+  const st = document.createElement('style');
+  st.id = 'sw2robot-spawn-height-style';
+  st.textContent = `
+    .mjcf-spawn-height {
+      display:flex; align-items:center; gap:4px; color:#8a93a3;
+      font-size:11px; padding:1px 3px; border-radius:4px;
+    }
+    .mjcf-spawn-height input {
+      width:74px; box-sizing:border-box; background:#15171a; color:#d7dde6;
+      border:1px solid #414852; border-radius:4px; padding:2px 5px;
+      font-size:11px;
+    }
+    .mjcf-spawn-height input:focus { border-color:#6b7b90; outline:none; }
+    .mjcf-spawn-height button {
+      border:1px solid #414852; background:#1b2027; color:#aab3c0;
+      border-radius:4px; padding:2px 6px; cursor:pointer; font-size:10px;
+    }
+    .mjcf-spawn-height button:hover:not(:disabled) { color:#fff; background:#262d36; }
+    .mjcf-spawn-height .spawn-state { color:#6f7a88; font-size:10px; }
+    .mjcf-spawn-height .spawn-state.custom { color:#e8c468; }
+    .mjcf-spawn-height .spawn-state.err { color:#ff7777; }
+    .mjcf-spawn-height.disabled { opacity:.55; }
+  `;
+  document.head.appendChild(st);
+}
+
+async function spawnApi(url, options = {}) {
+  const resp = await fetch(url, options);
+  const text = await resp.text();
+  let payload = {};
+  try { payload = text ? JSON.parse(text) : {}; }
+  catch { throw new Error(`invalid API response (${resp.status})`); }
+  if (!resp.ok || payload.error) {
+    throw new Error(payload.error ?? `HTTP ${resp.status}`);
+  }
+  return payload;
+}
+
+function syncSpawnFixedBase() {
+  const row = document.getElementById('mjcf-spawn-height');
+  const input = document.getElementById('expspawnheight');
+  const auto = document.getElementById('expspawnauto');
+  const state = row?.querySelector('.spawn-state');
+  const fixed = !!document.getElementById('expfixedbase')?.checked;
+  if (!row || !input || !auto) { return; }
+  input.disabled = fixed;
+  auto.disabled = fixed;
+  row.classList.toggle('disabled', fixed);
+  if (fixed && state) { state.textContent = 'fixed base'; }
+}
+
+function applySpawnPayload(payload) {
+  const row = document.getElementById('mjcf-spawn-height');
+  const input = document.getElementById('expspawnheight');
+  const state = row?.querySelector('.spawn-state');
+  if (!row || !input || !state) { return; }
+  if (!payload?.supported) {
+    row.style.display = 'none';
+    return;
+  }
+  row.style.display = 'flex';
+  const h = payload.mujoco_spawn_height;
+  if (h == null) {
+    input.value = '';
+    state.textContent = 'Auto (mesh clearance)';
+    state.className = 'spawn-state';
+  } else {
+    input.value = String(h);
+    state.textContent = `${Number(h).toFixed(3)} m`;
+    state.className = 'spawn-state custom';
+  }
+  syncSpawnFixedBase();
+}
+
+async function refreshSpawnHeight() {
+  const seq = ++spawnRefreshSeq;
+  const row = document.getElementById('mjcf-spawn-height');
+  if (!row) { return; }
+  try {
+    const payload = await spawnApi('/api/actuation?v=' + Date.now());
+    if (seq !== spawnRefreshSeq) { return; }
+    applySpawnPayload(payload);
+  } catch (e) {
+    if (seq !== spawnRefreshSeq) { return; }
+    const state = row.querySelector('.spawn-state');
+    if (state) {
+      state.textContent = 'API error';
+      state.className = 'spawn-state err';
+    }
+    row.title = e.message ?? String(e);
+  }
+}
+
+async function saveSpawnHeight(height) {
+  const row = document.getElementById('mjcf-spawn-height');
+  const input = document.getElementById('expspawnheight');
+  const auto = document.getElementById('expspawnauto');
+  const state = row?.querySelector('.spawn-state');
+  if (!row || !input || !auto || !state) { return; }
+  input.disabled = true;
+  auto.disabled = true;
+  state.textContent = 'saving…';
+  state.className = 'spawn-state';
+  try {
+    const payload = await spawnApi('/api/set_spawn_height', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ height }),
+    });
+    applySpawnPayload(payload);
+    if (typeof log === 'function') {
+      log(`MuJoCo spawn height: ${height == null ? 'Auto' : height + ' m'} ✓`, 'ok');
+    }
+  } catch (e) {
+    state.textContent = 'save failed';
+    state.className = 'spawn-state err';
+    row.title = e.message ?? String(e);
+    if (typeof log === 'function') {
+      log(`MuJoCo spawn height update failed: ${e.message ?? e}`, 'err');
+    }
+  } finally {
+    syncSpawnFixedBase();
+  }
+}
+
+function ensureSpawnHeightUi() {
+  if (document.getElementById('mjcf-spawn-height')) { return; }
+  const fixedBase = document.getElementById('expfixedbase');
+  const fixedLabel = fixedBase?.closest('label');
+  if (!fixedLabel) { return; }
+  ensureSpawnStyle();
+
+  const row = document.createElement('div');
+  row.id = 'mjcf-spawn-height';
+  row.className = 'mjcf-spawn-height';
+  row.title = 'Initial floating-base world Z in metres. Leave blank for Auto: use the mesh-derived safe clearance height.';
+  row.innerHTML =
+    '<span>Initial spawn Z</span>' +
+    '<input id="expspawnheight" type="number" min="0" step="0.01" placeholder="Auto">' +
+    '<span>m</span>' +
+    '<button id="expspawnauto" type="button">Auto</button>' +
+    '<span class="spawn-state">checking</span>';
+  fixedLabel.insertAdjacentElement('afterend', row);
+
+  const input = row.querySelector('#expspawnheight');
+  const auto = row.querySelector('#expspawnauto');
+  input.addEventListener('keydown', e => {
+    if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+  });
+  input.addEventListener('change', () => {
+    const raw = input.value.trim();
+    if (!raw) { saveSpawnHeight(null); return; }
+    const value = Number(raw);
+    if (!Number.isFinite(value) || value < 0) {
+      const state = row.querySelector('.spawn-state');
+      state.textContent = '>= 0 m required';
+      state.className = 'spawn-state err';
+      return;
+    }
+    saveSpawnHeight(value);
+  });
+  auto.addEventListener('click', () => {
+    input.value = '';
+    saveSpawnHeight(null);
+  });
+  fixedBase.addEventListener('change', syncSpawnFixedBase);
+
+  refreshSpawnHeight();
+}
+
+ensureSpawnHeightUi();
+const titleForSpawnHeight = document.getElementById('title');
+if (titleForSpawnHeight) {
+  new MutationObserver(() => refreshSpawnHeight()).observe(
+    titleForSpawnHeight, { childList: true, characterData: true, subtree: true });
+}

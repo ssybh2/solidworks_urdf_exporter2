@@ -7,11 +7,15 @@ What is sw2robot-specific, and all that remains here, is the SCALE of the
 meshes we hand it:
 
 * SolidWorks exports parts in **millimetres** (a servo body is ~32 mm) while
-  the URDF skeleton is in **metres**, so a per-part mesh needs ``MM_TO_M``
-  before density is applied -- otherwise mass comes out 1e9 times too large.
+  the URDF skeleton is in **metres**, so a per-part SolidWorks mesh needs
+  ``MM_TO_M`` before density is applied -- otherwise mass comes out 1e9 times
+  too large.
 * Composed sub-assembly ``.glb`` files are the exception: ``mesh.py`` already
-  applies the 0.001 and stamps ``units="meter"`` when it writes them, so they
+  applies the 0.001 and stamps ``units=\"meter\"`` when it writes them, so they
   must NOT be scaled again.
+* The Autodesk Inventor backend exports ``.stl`` explicitly with
+  ``ExportUnits = metre`` through Inventor's STL translator, so those are also
+  already SI and must NOT be scaled again.
 """
 
 from __future__ import annotations
@@ -21,14 +25,24 @@ from skrobot.utils.inertia import DEFAULT_DENSITY, link_inertial_from_mesh
 MM_TO_M = 0.001
 
 
+def mesh_scale_for_path(mesh_path, default=MM_TO_M):
+    """Return the mesh-unit -> metre factor for a sw2robot working mesh."""
+    if not mesh_path:
+        return default
+    low = mesh_path.lower()
+    if low.endswith((".glb", ".stl")):
+        return 1.0
+    return default
+
+
 def link_inertial(mesh_path, visual_xyz, visual_rpy,
                   density=DEFAULT_DENSITY, scale=MM_TO_M):
     """Inertial for one link, in the link frame, from a sw2robot-exported mesh.
 
     A thin wrapper over :func:`skrobot.utils.inertia.link_inertial_from_mesh`
-    that applies sw2robot's mesh-unit convention: millimetre parts by default,
-    but ``.glb`` sub-assembly composites taken as metres (see the module
-    docstring).
+    that applies sw2robot's mesh-unit convention: millimetre SolidWorks parts
+    by default, but metre-native ``.glb`` composites and Inventor ``.stl``
+    inputs are taken as metres (see the module docstring).
 
     Parameters
     ----------
@@ -39,7 +53,8 @@ def link_inertial(mesh_path, visual_xyz, visual_rpy,
     density : float
         Material density in kg/m^3.
     scale : float
-        Mesh-unit -> metre factor, overridden to 1.0 for ``.glb`` inputs.
+        Default mesh-unit -> metre factor, overridden to 1.0 for metre-native
+        ``.glb`` and ``.stl`` inputs produced by sw2robot.
 
     Returns
     -------
@@ -50,7 +65,6 @@ def link_inertial(mesh_path, visual_xyz, visual_rpy,
     """
     if not mesh_path:
         return None
-    if mesh_path.lower().endswith(".glb"):
-        scale = 1.0
+    scale = mesh_scale_for_path(mesh_path, default=scale)
     return link_inertial_from_mesh(mesh_path, visual_xyz, visual_rpy,
                                    density=density, scale=scale)

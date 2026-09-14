@@ -24,9 +24,9 @@ function fmtSecs(s) {
                                      s: String(s % 60).padStart(2, '0') });
 }
 
-// extraction runs SolidWorks in a server-side thread that checks a cancel flag
-// at every progress checkpoint (per phase / per mesh), so it can be interrupted
-// part-way through a heavy file.
+// extraction runs CAD automation in a server-side thread that checks a cancel
+// flag at every progress checkpoint (per phase / per mesh), so it can be
+// interrupted part-way through a heavy file.
 export let extracting = false;
 export function cancelExtraction() {
   log(t('extract.cancelling'), 'wrn');
@@ -42,12 +42,11 @@ async function ensureNoExtraction() {
   }
 }
 
-// Which assembly configuration to extract.  Resolves to a config name, '' for
-// "the file's saved-active one", or null when the user backed out.  The picker
-// only appears when the file genuinely offers a choice (>1 configuration and a
-// SolidWorks session that could list them) -- a single-config assembly, or a
-// machine with no SolidWorks running, goes straight through as before.
+// Which SolidWorks assembly configuration to extract.  Inventor Model State /
+// iAssembly selection is not implemented yet, so .iam/.ipt proceed with the
+// active model without showing this SolidWorks-specific picker.
 async function pickConfiguration(p) {
+  if (/\.(iam|ipt)$/i.test(p)) { return ''; }
   let info;
   try {
     const r = await fetch('/api/configurations?path=' + encodeURIComponent(p));
@@ -82,7 +81,7 @@ async function pickConfiguration(p) {
   });
 }
 
-// SolidWorks extraction: start the job, stream its progress into the log
+// CAD extraction: start the job, stream its progress into the log
 export async function extractFlow(p, configuration) {
   await ensureNoExtraction();           // a heavy job in flight? cancel it first
   if (configuration === undefined) {
@@ -107,8 +106,8 @@ export async function extractFlow(p, configuration) {
   let seen = 0;
   const backdrop = document.getElementById('loadbackdrop');
   try {
-    // the server now owns the stage/frac mapping (see _prog_extract_stage) --
-    // the client just streams new log lines; renderProgress paints the rest
+    // the server owns the stage/frac mapping; the client just streams new log
+    // lines while renderProgress paints the checklist + bar
     const { result, cancelled } = await pollProgress({
       intervalMs: 1000,
       onTick: st => {
@@ -142,8 +141,8 @@ export async function extractFlow(p, configuration) {
 }
 
 export function openAny(p) {
-  // a .SLDASM assembly OR a single .SLDPRT part goes through SolidWorks extract
-  // (a lone part becomes a 1-link URDF); a package/.urdf just loads
-  if (/\.(sldasm|sldprt)$/i.test(p)) { extractFlow(p); }
+  // SolidWorks and Inventor CAD files go through their extraction backend;
+  // an already-built package/.urdf just loads directly.
+  if (/\.(sldasm|sldprt|iam|ipt)$/i.test(p)) { extractFlow(p); }
   else { openServerPath(p); }
 }
