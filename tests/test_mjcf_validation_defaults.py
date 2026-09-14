@@ -4,6 +4,8 @@ import pytest
 
 from sw2robot.exporter.mjcf_validation_defaults import (
     _apply_motor_damping,
+    _apply_spawn_height,
+    _configured_spawn_height,
     _prepare_kwargs,
 )
 
@@ -79,3 +81,56 @@ def test_negative_motor_damping_is_rejected():
     )
     with pytest.raises(ValueError, match="damping"):
         _apply_motor_damping(root, -0.1, strip_default=True)
+
+
+def _spawn_model():
+    return ET.fromstring(
+        '<mujoco><worldbody><body name="base" pos="0 0 0">'
+        '<freejoint name="floating_base"/></body></worldbody>'
+        '<keyframe><key name="home" '
+        'qpos="0 0 0.189986492 1 0 0 0 0 0"/></keyframe></mujoco>'
+    )
+
+
+def test_auto_spawn_height_copies_mesh_derived_home_to_default_pose():
+    root = _spawn_model()
+    changed, height = _apply_spawn_height(root, None)
+    assert changed is True
+    assert height == pytest.approx(0.189986492)
+    assert root.find("worldbody/body").get("pos") == "0 0 0.189986492"
+    # Auto must not rewrite the converter's home keyframe.
+    assert root.find("keyframe/key").get("qpos").split()[2] == "0.189986492"
+
+
+def test_custom_spawn_height_updates_default_pose_and_home_keyframe():
+    root = _spawn_model()
+    changed, height = _apply_spawn_height(root, 0.42)
+    assert changed is True
+    assert height == pytest.approx(0.42)
+    assert root.find("worldbody/body").get("pos") == "0 0 0.42"
+    assert root.find("keyframe/key").get("qpos").split()[2] == "0.42"
+
+
+def test_spawn_height_does_not_affect_fixed_base_model():
+    root = ET.fromstring(
+        '<mujoco><worldbody><body name="base" pos="0 0 0"/></worldbody>'
+        '<keyframe><key name="home" qpos="0 0"/></keyframe></mujoco>'
+    )
+    assert _apply_spawn_height(root, 0.5) == (False, None)
+    assert root.find("worldbody/body").get("pos") == "0 0 0"
+
+
+def test_spawn_height_config_auto_and_custom(tmp_path):
+    assert _configured_spawn_height(str(tmp_path), "robot") is None
+    (tmp_path / "robot.joints.yaml").write_text(
+        "mujoco_spawn_height: 0.35\n", encoding="utf-8"
+    )
+    assert _configured_spawn_height(str(tmp_path), "robot") == pytest.approx(0.35)
+
+
+def test_invalid_spawn_height_config_is_rejected(tmp_path):
+    (tmp_path / "robot.joints.yaml").write_text(
+        "mujoco_spawn_height: -0.1\n", encoding="utf-8"
+    )
+    with pytest.raises(ValueError, match="spawn_height"):
+        _configured_spawn_height(str(tmp_path), "robot")
