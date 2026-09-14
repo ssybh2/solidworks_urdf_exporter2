@@ -7,14 +7,18 @@ we deliberately default to:
 
 * no derived joint damping (``backemf_damping=False``),
 * no synthetic foot contact spheres (``foot_contacts=False``), and
-* source-mesh collision geometry (``collision='copy'``).
+* strict source-mesh collision geometry (``collision='copy'``).
 
-All three remain code-level interfaces.  An advanced caller can explicitly pass
-``backemf_damping=True`` or ``foot_contacts=True`` or another ``collision`` mode.
-``motor_damping`` is an additional optional post-process interface: pass a scalar
-to assign that damping to every final Motor joint, or a ``{joint: value}`` map to
-set selected Motor joints only.  With no ``motor_damping`` argument, Motor joints
-are left undamped by default.
+Damping remains a code-level interface.  An advanced caller can explicitly pass
+``backemf_damping=True`` to restore the converter's effort/velocity-derived
+joint damping, or ``motor_damping=<scalar>`` / ``{joint: value}`` to assign a
+specific damping to the final Motor joints after actuator pruning.
+
+Synthetic foot contacts remain opt-in with ``foot_contacts=True``.  Approximate
+collision modes remain available only when a caller deliberately passes
+``strict_mesh_collision=False`` together with e.g. ``collision='coacd'``.  The
+normal Web/CLI MJCF path therefore cannot silently turn CAD meshes into boxes,
+hulls or CoACD parts because of a stale collision selector.
 """
 
 from __future__ import annotations
@@ -27,16 +31,25 @@ from functools import wraps
 def _prepare_kwargs(kwargs):
     """Return ``(kwargs_for_mjcf_export, motor_damping, strip_motor_damping)``.
 
-    ``setdefault`` is important: these are defaults, not a removal of the
-    underlying tuning API.  ``foot_contacts=None`` historically meant "add them
-    for floating-base robots", so normalise None to False as well.
+    ``foot_contacts=None`` historically meant "add them for floating-base
+    robots", so normalise None to False.  ``strict_mesh_collision`` is consumed
+    here (the underlying exporter does not know that policy flag).
     """
     out = dict(kwargs)
     explicit_backemf = bool(out.get("backemf_damping", False))
     out.setdefault("backemf_damping", False)
+
     if out.get("foot_contacts") is None:
         out["foot_contacts"] = False
-    out.setdefault("collision", "copy")
+
+    strict_mesh = bool(out.pop("strict_mesh_collision", True))
+    if strict_mesh:
+        # 'copy' reuses the CAD/visual mesh as the collision STL without any
+        # primitive fitting, convex hull or CoACD approximation.
+        out["collision"] = "copy"
+    else:
+        out.setdefault("collision", "copy")
+
     motor_damping = out.pop("motor_damping", None)
     return out, motor_damping, not explicit_backemf
 
