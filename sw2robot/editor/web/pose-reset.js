@@ -1,6 +1,7 @@
 import { viewer } from './dom.js';
 import { playRows, rows } from './joint-rows.js';
-import { packageState, selectionState, treeState } from './state.js';
+import { op } from './session-log.js';
+import { packageState, selectionState } from './state.js';
 
 // Exact "as imported" pose snapshot.
 //
@@ -29,7 +30,7 @@ function capturePose(robot) {
 
 function setJointDirect(j, q) {
   // Deliberately bypass viewer.setJointValue(): that wrapper emits an
-  // angle-change for every joint.  Reset is an atomic restore, and the closed
+  // angle-change for every joint. Reset is an atomic restore, and the closed
   // loop solver must see the completed CAD pose rather than N half-restored
   // intermediate poses.
   if (typeof j?.setJointValue === 'function') {
@@ -68,8 +69,8 @@ function captureImportPose() {
   if (!robot) { return; }
   const key = packageKey();
 
-  // geometry-loaded also fires after edit/re-root rebuilds.  Do not overwrite
-  // the CAD reference pose during those rebuilds.  A different package (or a
+  // geometry-loaded also fires after edit/re-root rebuilds. Do not overwrite
+  // the CAD reference pose during those rebuilds. A different package (or a
   // full page reload) gets a new snapshot.
   if (importPose && key === importKey) { return; }
   importPose = capturePose(robot);
@@ -102,7 +103,7 @@ export function restoreImportPose() {
   viewer.redraw();
 
   // Tell the closed-loop module that this complete CAD pose, not the previous
-  // moved pose, is now the accepted branch reference.  The custom event is
+  // moved pose, is now the accepted branch reference. The custom event is
   // intentionally separate from angle-change so no intermediate IK is run.
   viewer.dispatchEvent(new CustomEvent('import-pose-restored', {
     detail: { angles: { ...importPose }, count: n },
