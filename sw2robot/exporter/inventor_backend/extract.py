@@ -6,6 +6,8 @@ import hashlib
 import os
 from collections import Counter
 
+import yaml
+
 from ..model import safe_name
 from ..state import ComponentState, GraphState
 from .com import (Inventor, doc_path, export_stl, iter_collection, mass_props,
@@ -13,6 +15,7 @@ from .com import (Inventor, doc_path, export_stl, iter_collection, mass_props,
 from .relationships import classic_constraints, native_joints
 
 GRAPH_FILE = "graph.json"
+APPEARANCE_FILE = "appearance_colors.yaml"
 
 
 def _short_hash(text):
@@ -87,6 +90,67 @@ def _emit(progress, msg):
         progress(msg)
 
 
+def _appearance_hex(obj):
+    """Best-effort Inventor Appearance -> ``#RRGGBB``.
+
+    A ComponentOccurrence exposes its effective ``Appearance`` Asset.  Part
+    documents expose ``ActiveAppearance`` instead.  Generic Inventor appearance
+    assets store the visible diffuse colour in ``generic_diffuse``; imported or
+    vendor assets are not always generic, so the fallback scans the asset values
+    and accepts the first value whose ``Value`` behaves like an Inventor Color.
+
+    This intentionally records one uniform colour per occurrence/link.  STL
+    cannot carry Inventor's full face/material graph reliably, but preserving the
+    effective occurrence colour is far better than the pure-black MJCF that the
+    STL -> URDF -> MJCF path otherwise produces.
+    """
+    asset = safe_prop(obj, "Appearance") or safe_prop(obj, "ActiveAppearance")
+    if asset is None:
+        return None
+
+    values = []
+    try:
+        values.append(asset.Item("generic_diffuse"))
+    except Exception:
+        pass
+    for value in iter_collection(asset):
+        if all(value is not old for old in values):
+            values.append(value)
+
+    for value in values:
+        color = safe_prop(value, "Value")
+        if color is None:
+            continue
+        try:
+            rgb = [int(round(float(safe_prop(color, name))))
+                   for name in ("Red", "Green", "Blue")]
+        except (TypeError, ValueError):
+            continue
+        if all(0 <= channel <= 255 for channel in rgb):
+            return "#{:02X}{:02X}{:02X}".format(*rgb)
+    return None
+
+
+def _write_appearance_colors(pkg_dir, colors):
+    """Persist native CAD colours for detached ROS/MJCF exporters.
+
+    Exporters often run later than Inventor extraction (or in a different
+    process), so they cannot ask Inventor for Appearance then.  Keep a tiny
+    package sidecar keyed by the final ASCII link names.  Explicit web/YAML
+    ``colors:`` overrides are merged on top at export time.
+    """
+    path = os.path.join(pkg_dir, APPEARANCE_FILE)
+    clean = {str(k): str(v) for k, v in (colors or {}).items() if k and v}
+    if not clean:
+        if os.path.exists(path):
+            os.remove(path)
+        return
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("# Autodesk Inventor effective occurrence appearance colours.\n")
+        f.write("# Keys are final ASCII URDF link IDs; explicit editor colors win.\n")
+        yaml.safe_dump(clean, f, sort_keys=True, allow_unicode=True)
+
+
 def _component_state(occ, meshes_dir, app, cache):
     name = occ_name(occ)
     doc, definition = occ_doc(occ), safe_prop(occ, "Definition")
@@ -123,6 +187,7 @@ def extract_inventor(cad_path, out_dir=None, robot_name=None,
     robot_name, pkg_dir = _package_paths(cad_path, out_dir, robot_name)
     meshes_dir = os.path.join(pkg_dir, "meshes")
     os.makedirs(meshes_dir, exist_ok=True)
+    appearance_colors = {}
 
     _emit(progress, f"opening {os.path.basename(cad_path)} ...")
     with Inventor(visible=visible, attach=attach) as inv:
@@ -145,17 +210,22 @@ def extract_inventor(cad_path, out_dir=None, robot_name=None,
                         sw_mass=mass, sw_com=com, sw_inertia=inertia,
                         sw_mass_overridden=overridden)],
                     ground=[robot_name], coordinate_systems=ucs_states(definition))
+                color = _appearance_hex(doc)
+                if color:
+                    appearance_colors[robot_name] = color
             else:
                 _emit(progress, "reading assembly occurrences and joints ...")
                 occs = [o for o in iter_collection(safe_prop(definition, "Occurrences"))
                         if not bool(safe_prop(o, "Suppressed", False))]
                 _emit(progress, f"components: {len(occs)}")
                 cache, components, hidden, part_frames = {}, [], [], {}
+                component_colors = []
                 for i, occ in enumerate(occs, 1):
                     _emit(progress,
                           f"exporting mesh {i}/{len(occs)}: {occ_name(occ)}")
                     comp = _component_state(occ, meshes_dir, inv.app, cache)
                     components.append(comp)
+                    component_colors.append((comp, _appearance_hex(occ)))
                     if not bool(safe_prop(occ, "Visible", True)):
                         hidden.append(comp.name)
                     if comp.part_path and comp.part_path not in part_frames:
@@ -164,8 +234,14 @@ def extract_inventor(cad_path, out_dir=None, robot_name=None,
                             part_frames[comp.part_path] = frames
 
                 _assign_unique_link_names(components)
+                appearance_colors = {
+                    comp.link_name: color for comp, color in component_colors if color
+                }
                 unique_count = len({c.link_name for c in components})
                 _emit(progress, f"unique URDF link names: {unique_count}/{len(components)}")
+                if appearance_colors:
+                    _emit(progress,
+                          f"appearance colours: {len(appearance_colors)}/{len(components)}")
 
                 names = {c.name for c in components}
                 (edges, limits, ground, covered,
@@ -204,6 +280,7 @@ def extract_inventor(cad_path, out_dir=None, robot_name=None,
 
             graph_path = os.path.join(pkg_dir, GRAPH_FILE)
             graph.save(graph_path)
+            _write_appearance_colors(pkg_dir, appearance_colors)
             _emit(progress, f"graph: {graph_path}")
         finally:
             inv.close(doc)
