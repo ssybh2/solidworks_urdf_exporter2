@@ -11,22 +11,25 @@ from sw2robot.exporter.mjcf_validation_defaults import (
 )
 
 
-def test_validation_defaults_use_zero_damping_strict_mesh_and_selective_self_collision():
+def test_validation_defaults_use_zero_damping_fine_coacd_and_self_collision():
     kwargs, motor_damping, strip_default, selective_self_collision = _prepare_kwargs({})
     assert kwargs["backemf_damping"] is False
     assert kwargs["foot_contacts"] is False
-    assert kwargs["collision"] == "copy"
+    assert kwargs["collision"] == "coacd"
+    assert kwargs["coacd_quality"] == "fine"
     assert kwargs["self_collision"] is False
     assert motor_damping is None
     assert strip_default is True
     assert selective_self_collision is True
 
 
-def test_strict_mesh_default_overrides_approximate_collision_mode():
+def test_strict_mesh_policy_overrides_primitive_mode_with_fine_coacd():
     kwargs, _motor_damping, _strip_default, selective = _prepare_kwargs({
         "collision": "box",
+        "coacd_quality": "balanced",
     })
-    assert kwargs["collision"] == "copy"
+    assert kwargs["collision"] == "coacd"
+    assert kwargs["coacd_quality"] == "fine"
     assert selective is True
 
 
@@ -61,20 +64,23 @@ def test_explicit_damping_and_advanced_collision_interfaces_are_preserved():
         "foot_contacts": True,
         "strict_mesh_collision": False,
         "collision": "coacd",
+        "coacd_quality": "balanced",
         "motor_damping": 0.25,
     })
     assert kwargs["backemf_damping"] is True
     assert kwargs["foot_contacts"] is True
     assert kwargs["collision"] == "coacd"
+    assert kwargs["coacd_quality"] == "balanced"
     assert "strict_mesh_collision" not in kwargs
     assert motor_damping == 0.25
     assert strip_default is False
     assert selective is True
 
 
-def test_selective_self_collision_enables_remote_links_and_excludes_connections():
+def test_selective_self_collision_includes_parent_child_and_excludes_only_loops():
     root = ET.fromstring(
         '<mujoco>'
+        '<option><flag actuation="disable"/></option>'
         '<worldbody>'
         '<geom name="ground" type="plane" contype="1" conaffinity="1"/>'
         '<body name="base">'
@@ -98,6 +104,7 @@ def test_selective_self_collision_enables_remote_links_and_excludes_connections(
     changed, report = _apply_selective_self_collision(root)
     assert changed is True
     assert report["collision_geoms"] == 4
+    assert report["filterparent_disabled"] is True
 
     collision_geoms = [
         g for g in root.iter("geom") if g.get("group") == "3"
@@ -109,32 +116,38 @@ def test_selective_self_collision_enables_remote_links_and_excludes_connections(
     assert ground.get("contype") == "1"
     assert ground.get("conaffinity") == "1"
 
+    flag = root.find("option/flag")
+    assert flag.get("actuation") == "disable"
+    assert flag.get("filterparent") == "disable"
+
     excluded = {
         tuple(sorted((e.get("body1"), e.get("body2"))))
         for e in root.findall("contact/exclude")
     }
-    # Direct tree-joint interfaces are excluded.
-    assert ("base", "left") in excluded
-    assert ("base", "right") in excluded
-    assert ("left", "left_tip") in excluded
-    # The dropped CAD loop hinge is also excluded from contact.
-    assert ("left_tip", "right") in excluded
-    # Siblings are NOT excluded: they must be able to collide instead of
-    # passing through each other.
-    assert ("left", "right") not in excluded
+    # Direct tree-joint interfaces MUST remain collision-enabled; this is the
+    # important change that prevents adjacent links rotating through each other.
+    assert ("base", "left") not in excluded
+    assert ("base", "right") not in excluded
+    assert ("left", "left_tip") not in excluded
+    assert ("base", "left") in set(report["tree_pairs"])
+    # Only the dropped CAD loop hinge is excluded from contact.
+    assert excluded == {("left_tip", "right")}
 
 
-def test_selective_self_collision_is_idempotent():
+def test_selective_self_collision_is_idempotent_without_loop_excludes():
     root = ET.fromstring(
         '<mujoco><worldbody><body name="a">'
         '<geom group="3" type="mesh"/><body name="b">'
         '<geom group="3" type="mesh"/></body></body></worldbody></mujoco>'
     )
-    changed, _ = _apply_selective_self_collision(root)
+    changed, report = _apply_selective_self_collision(root)
     assert changed is True
+    assert report["excluded_pairs"] == []
+    assert root.find("option/flag").get("filterparent") == "disable"
+    assert root.find("contact") is None
+
     changed, _ = _apply_selective_self_collision(root)
     assert changed is False
-    assert len(root.findall("contact/exclude")) == 1
 
 
 def test_default_motor_damping_is_removed_without_deleting_motor_interface():
