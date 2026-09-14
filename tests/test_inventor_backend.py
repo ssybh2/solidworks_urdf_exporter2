@@ -44,10 +44,17 @@ class _Geometry:
         self.Normal = _Vector(*normal)
 
 
+class _ProxyGeometry(_Geometry):
+    def __init__(self, center, normal):
+        super().__init__(center, normal)
+        self.NativeObject = object()
+        self.ContainingOccurrence = object()
+
+
 class _Intent:
-    def __init__(self, point, direction):
+    def __init__(self, point, direction, geometry=None):
         self.Point = _Point(*point)
-        self.Geometry = _Geometry(point, direction)
+        self.Geometry = geometry or _Geometry(point, direction)
 
 
 class _Collection:
@@ -60,11 +67,11 @@ class _Collection:
 
 
 class _Matrix:
-    def __init__(self):
+    def __init__(self, tx=10.0, ty=20.0, tz=30.0):
         self._v = [
-            [1.0, 0.0, 0.0, 10.0],
-            [0.0, 1.0, 0.0, 20.0],
-            [0.0, 0.0, 1.0, 30.0],
+            [1.0, 0.0, 0.0, tx],
+            [0.0, 1.0, 0.0, ty],
+            [0.0, 0.0, 1.0, tz],
             [0.0, 0.0, 0.0, 1.0],
         ]
 
@@ -100,15 +107,17 @@ def _joint(name, kind, a, b, point=(10.0, 20.0, 30.0), axis=(0.0, 1.0, 0.0)):
         HasLinearPositionStartLimit=False,
         HasLinearPositionEndLimit=False,
     )
+    oa = SimpleNamespace(Name=a)
+    ob = SimpleNamespace(Name=b)
     return SimpleNamespace(
         Name=name,
         Suppressed=False,
         Locked=False,
         Definition=d,
-        AffectedOccurrenceOne=SimpleNamespace(Name=a),
-        AffectedOccurrenceTwo=SimpleNamespace(Name=b),
-        OccurrenceOne=SimpleNamespace(Name=a),
-        OccurrenceTwo=SimpleNamespace(Name=b),
+        AffectedOccurrenceOne=oa,
+        AffectedOccurrenceTwo=ob,
+        OccurrenceOne=oa,
+        OccurrenceTwo=ob,
     )
 
 
@@ -248,6 +257,57 @@ def test_authored_rotational_wins_over_planar_on_same_pair():
     assert limits[0].axis_dir == pytest.approx([0.0, 1.0, 0.0])
     assert any("ACT_HIP_FL" in line for line in diagnostics)
     assert any("INVENTOR_PLANAR" in msg for msg in warnings)
+
+
+def test_native_joint_local_geometry_is_transformed_into_assembly_space():
+    a, b = "motor:1", "arm:1"
+    # Both native origins describe the same physical X=110 cm joint axis, but
+    # each point is expressed in its own occurrence-local coordinates.
+    o1 = SimpleNamespace(Name=a, Transformation=_Matrix(100.0, 0.0, 0.0))
+    o2 = SimpleNamespace(Name=b, Transformation=_Matrix(110.0, 0.0, 0.0))
+    d = SimpleNamespace(
+        JointType=INV_ROTATIONAL,
+        OriginOne=_Intent((10.0, 0.0, 0.0), (0.0, 0.0, 1.0)),
+        OriginTwo=_Intent((0.0, 0.0, 0.0), (0.0, 0.0, 1.0)),
+        FlipOriginDirection=False,
+        HasAngularPositionLimits=False,
+    )
+    j = SimpleNamespace(
+        Name="ACT_TEST", Suppressed=False, Locked=False, Definition=d,
+        AffectedOccurrenceOne=o1, AffectedOccurrenceTwo=o2,
+        OccurrenceOne=o1, OccurrenceTwo=o2,
+    )
+    definition = SimpleNamespace(Joints=_Collection(j))
+    _edges, limits, *_ = native_joints(definition, {a, b})
+    assert limits[0].axis_point == pytest.approx([1.1, 0.0, 0.0])
+    assert limits[0].axis_dir == pytest.approx([0.0, 0.0, 1.0])
+
+
+def test_native_joint_proxy_geometry_is_not_transformed_twice():
+    a, b = "motor:1", "arm:1"
+    # Proxy geometry is already in assembly space at X=110 cm.  Occurrence
+    # transforms are intentionally non-identity; applying them again would move
+    # the red axis far away from the actual model joint.
+    o1 = SimpleNamespace(Name=a, Transformation=_Matrix(100.0, 0.0, 0.0))
+    o2 = SimpleNamespace(Name=b, Transformation=_Matrix(110.0, 0.0, 0.0))
+    world_geom1 = _ProxyGeometry((110.0, 0.0, 0.0), (0.0, 0.0, 1.0))
+    world_geom2 = _ProxyGeometry((110.0, 0.0, 0.0), (0.0, 0.0, 1.0))
+    d = SimpleNamespace(
+        JointType=INV_ROTATIONAL,
+        OriginOne=_Intent((110.0, 0.0, 0.0), (0.0, 0.0, 1.0), world_geom1),
+        OriginTwo=_Intent((110.0, 0.0, 0.0), (0.0, 0.0, 1.0), world_geom2),
+        FlipOriginDirection=False,
+        HasAngularPositionLimits=False,
+    )
+    j = SimpleNamespace(
+        Name="ACT_PROXY", Suppressed=False, Locked=False, Definition=d,
+        AffectedOccurrenceOne=o1, AffectedOccurrenceTwo=o2,
+        OccurrenceOne=o1, OccurrenceTwo=o2,
+    )
+    definition = SimpleNamespace(Joints=_Collection(j))
+    _edges, limits, *_ = native_joints(definition, {a, b})
+    assert limits[0].axis_point == pytest.approx([1.1, 0.0, 0.0])
+    assert limits[0].axis_dir == pytest.approx([0.0, 0.0, 1.0])
 
 
 def test_rotational_joint_limits_stay_in_radians():
