@@ -4,6 +4,7 @@ from .actuator_fixes import install as _install_actuator_fixes
 from .appearance_fixes import install as _install_appearance_fixes
 from .exporter_fixes import install as _install_exporter_fixes
 from .mjcf_validation_defaults import install as _install_mjcf_validation_defaults
+from .mjcf_vhacd_backend import install as _install_mjcf_vhacd_backend
 
 # The CAD graph can contain closed kinematic loops while URDF is necessarily a
 # tree. Install the MJCF post-process first so BOTH CLI exports and the web ZIP
@@ -19,15 +20,21 @@ _install_appearance_fixes()
 # any remaining movable-but-passive joints after closed-loop driver selection.
 _install_actuator_fixes()
 
-# Outermost MuJoCo policy for mechanical-model validation: Motor interfaces stay
-# present, but default damping is zero and collision stays on the source mesh;
-# no synthetic foot-contact sphere is added unless a caller explicitly asks for
-# one.  The underlying damping/contact/collision APIs remain opt-in interfaces.
+# Mechanical-validation policy: zero default Motor damping, no synthetic foot
+# contacts, floating-base spawn-height handling, and selective self-collision
+# including direct parent-child bodies.
 _install_mjcf_validation_defaults()
+
+# Outermost collision backend.  The previous fine-CoACD default can assert in
+# its native DLL on some Inventor triangle soups and wedge the Windows web
+# exporter behind a CRT dialog.  Use the already-required V-HACD backend for the
+# normal MJCF path instead; native CoACD stays explicitly opt-in.
+_install_mjcf_vhacd_backend()
 
 del (
     _install_exporter_fixes,
     _install_appearance_fixes,
     _install_actuator_fixes,
     _install_mjcf_validation_defaults,
+    _install_mjcf_vhacd_backend,
 )
