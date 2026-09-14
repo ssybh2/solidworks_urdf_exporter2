@@ -12,7 +12,10 @@ Selection priority:
 3. otherwise leave the previous automatic closed-loop result unchanged.
 
 The explicit list may use pre-rename joint IDs; ``joint_names:`` is applied before
-matching the final MJCF joint names.
+matching the final MJCF joint names. An explicit selection is also injected into
+the closed-loop ``independent`` allow-list BEFORE the lower MJCF post-processor
+runs, so a physically actuated loop joint cannot be deleted merely because the
+automatic IK driver choice picked a different coordinate.
 """
 
 from __future__ import annotations
@@ -67,6 +70,28 @@ def _configured_actuated_joints(pkg_dir, robot_name):
     return result
 
 
+def _working_urdf_act_prefix(pkg_dir, robot_name):
+    """ACT_* joint IDs from the final working URDF, or None if convention unused."""
+    path = os.path.join(pkg_dir, "urdf", robot_name + ".urdf")
+    try:
+        root = ET.parse(path).getroot()
+    except (OSError, ET.ParseError):
+        return None
+    names = {
+        joint.get("name") for joint in root.findall("joint")
+        if joint.get("name") and joint.get("name").upper().startswith("ACT_")
+    }
+    return names or None
+
+
+def _requested_actuated_joints(pkg_dir, robot_name):
+    """Highest-priority pre-export actuator selection, or None for auto mode."""
+    configured = _configured_actuated_joints(pkg_dir, robot_name)
+    if configured is not None:
+        return configured
+    return _working_urdf_act_prefix(pkg_dir, robot_name)
+
+
 def _prefix_actuated_joints(root):
     """ACT_* MJCF joint names, or None when that convention is not in use."""
     names = {
@@ -74,6 +99,43 @@ def _prefix_actuated_joints(root):
         if joint.get("name") and joint.get("name").upper().startswith("ACT_")
     }
     return names or None
+
+
+def _load_loop_cfg(pkg_dir, explicit=None):
+    """Closed-loop sidecar used only to override its actuator driver choice."""
+    if explicit is not None:
+        return explicit if isinstance(explicit, dict) else None
+    path = os.path.join(pkg_dir, "loop_closures.yaml")
+    if not os.path.isfile(path):
+        return None
+    try:
+        import yaml
+        with open(path, encoding="utf-8") as f:
+            cfg = yaml.safe_load(f) or None
+    except Exception:
+        return None
+    return cfg if isinstance(cfg, dict) and cfg.get("closures") else None
+
+
+def _loop_cfg_with_actuators(pkg_dir, explicit, selected):
+    """Copy closure config and make the explicit actuator set authoritative.
+
+    The inner closed-loop MJCF fix uses ``independent`` as a positive actuator
+    allow-list. Replacing it here happens before that layer runs, so explicit
+    physical motors can override an arbitrary automatic IK driver selection.
+    Geometry/equality closure data is unchanged.
+    """
+    if selected is None:
+        return explicit
+    cfg = _load_loop_cfg(pkg_dir, explicit)
+    if cfg is None:
+        return explicit
+    out = dict(cfg)
+    out["independent"] = sorted(set(selected))
+    out["dependent"] = [
+        name for name in (cfg.get("dependent") or []) if name not in selected
+    ]
+    return out
 
 
 def _prune_actuators(root, selected=None):
@@ -121,8 +183,9 @@ def _readme_with_report(text, report):
             + f"- Active joints: {active}.\n")
 
 
-def _postprocess_path(out_root, pkg_dir, robot_name):
-    selected = _configured_actuated_joints(pkg_dir, robot_name)
+def _postprocess_path(out_root, pkg_dir, robot_name, selected=None):
+    if selected is None:
+        selected = _requested_actuated_joints(pkg_dir, robot_name)
     mjcf_dir = os.path.join(out_root, "mjcf")
     if not os.path.isdir(mjcf_dir):
         return None
@@ -150,8 +213,9 @@ def _postprocess_path(out_root, pkg_dir, robot_name):
     return report
 
 
-def _postprocess_files(files, pkg_dir, robot_name):
-    selected = _configured_actuated_joints(pkg_dir, robot_name)
+def _postprocess_files(files, pkg_dir, robot_name, selected=None):
+    if selected is None:
+        selected = _requested_actuated_joints(pkg_dir, robot_name)
     out = []
     report = None
     readme_index = None
@@ -191,16 +255,28 @@ def install():
     def write_mjcf_package(*args, **kwargs):
         pkg_dir = args[0] if args else kwargs["pkg_dir"]
         robot_name = args[1] if len(args) > 1 else kwargs["robot_name"]
-        out_root = original_write(*args, **kwargs)
-        _postprocess_path(out_root, pkg_dir, robot_name)
+        selected = _requested_actuated_joints(pkg_dir, robot_name)
+        inner = dict(kwargs)
+        override = _loop_cfg_with_actuators(
+            pkg_dir, inner.get("loop_closures"), selected)
+        if override is not None:
+            inner["loop_closures"] = override
+        out_root = original_write(*args, **inner)
+        _postprocess_path(out_root, pkg_dir, robot_name, selected)
         return out_root
 
     @wraps(original_build)
     def build_mjcf_package(*args, **kwargs):
         pkg_dir = args[0] if args else kwargs["pkg_dir"]
         robot_name = args[1] if len(args) > 1 else kwargs["robot_name"]
-        pkg, files = original_build(*args, **kwargs)
-        return pkg, _postprocess_files(files, pkg_dir, robot_name)
+        selected = _requested_actuated_joints(pkg_dir, robot_name)
+        inner = dict(kwargs)
+        override = _loop_cfg_with_actuators(
+            pkg_dir, inner.get("loop_closures"), selected)
+        if override is not None:
+            inner["loop_closures"] = override
+        pkg, files = original_build(*args, **inner)
+        return pkg, _postprocess_files(files, pkg_dir, robot_name, selected)
 
     mod.write_mjcf_package = write_mjcf_package
     mod.build_mjcf_package = build_mjcf_package
