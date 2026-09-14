@@ -20,6 +20,8 @@ from sw2robot.exporter.inventor_backend.extract import (
 from sw2robot.exporter.inventor_backend.relationships import (
     INV_ROTATIONAL,
     INV_SLIDE,
+    _constraint_axis,
+    classic_constraints,
     joint_limits,
 )
 
@@ -27,6 +29,26 @@ from sw2robot.exporter.inventor_backend.relationships import (
 class _Point:
     def __init__(self, x, y, z):
         self.X, self.Y, self.Z = x, y, z
+
+
+class _Vector:
+    def __init__(self, x, y, z):
+        self.X, self.Y, self.Z = x, y, z
+
+
+class _Geometry:
+    def __init__(self, center, normal):
+        self.Center = _Point(*center)
+        self.Normal = _Vector(*normal)
+
+
+class _Collection:
+    def __init__(self, *items):
+        self._items = list(items)
+        self.Count = len(self._items)
+
+    def Item(self, i):
+        return self._items[i - 1]
 
 
 class _Matrix:
@@ -113,6 +135,42 @@ def test_exact_duplicate_occurrence_names_are_still_forced_unique():
              SimpleNamespace(name="零件:1", link_name="")]
     _assign_unique_link_names(comps)
     assert comps[0].link_name != comps[1].link_name
+
+
+def test_constraint_axis_prefers_documented_assembly_space_geometry():
+    constraint = SimpleNamespace(
+        # Correct assembly-space circle center = (10,20,30) cm.
+        GeometryOne=_Geometry((10.0, 20.0, 30.0), (0.0, 1.0, 0.0)),
+        GeometryTwo=None,
+        # Deliberately wrong definition/local-space fallback.  The extractor
+        # must never choose this while GeometryOne is available.
+        EntityOne=_Geometry((900.0, 800.0, 700.0), (1.0, 0.0, 0.0)),
+        EntityTwo=None,
+    )
+    point, axis = _constraint_axis(constraint)
+    assert point == pytest.approx([0.1, 0.2, 0.3])
+    assert axis == pytest.approx([0.0, 1.0, 0.0])
+
+
+def test_non_insert_classic_constraint_is_not_force_fixed():
+    a = SimpleNamespace(Name="body:1")
+    b = SimpleNamespace(Name="bracket:1")
+    constraint = SimpleNamespace(
+        Suppressed=False,
+        AffectedOccurrenceOne=a,
+        AffectedOccurrenceTwo=b,
+        OccurrenceOne=a,
+        OccurrenceTwo=b,
+        # No AxesOpposed attribute => not an InsertConstraint.
+    )
+    definition = SimpleNamespace(Constraints=_Collection(constraint))
+    edges, limits, ground = classic_constraints(
+        definition, {"body:1", "bracket:1"}, set())
+    edge = next(iter(edges.values()))
+    assert edge.force_fixed is False
+    assert edge.types == ["INVENTOR_CONSTRAINT"]
+    assert limits == []
+    assert ground == set()
 
 
 def test_rotational_joint_limits_stay_in_radians():
