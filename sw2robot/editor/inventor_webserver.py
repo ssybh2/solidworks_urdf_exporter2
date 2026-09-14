@@ -173,7 +173,7 @@ def _send_fs(handler, target):
 
 
 class _InventorHandler(_ws._Handler):
-    """Intercept Inventor entry points + loop/actuation sidecars."""
+    """Intercept Inventor entry points + loop/MuJoCo metadata sidecars."""
 
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
@@ -183,7 +183,7 @@ class _InventorHandler(_ws._Handler):
         if path == "/api/actuation":
             # Lazy import avoids a module cycle: actuation_webserver subclasses
             # this handler, while direct inventor_webserver launches should still
-            # expose the exact same Motor/Passive and startup-actuation API.
+            # expose the same Motor/Passive, startup-actuation and spawn-height API.
             from .actuation_webserver import actuation_payload
             cls = type(self)
             return self._send_json(actuation_payload(cls.pkg_dir, cls.urdf_rel))
@@ -258,6 +258,18 @@ class _InventorHandler(_ws._Handler):
                     raise ValueError("enabled must be true or false")
                 payload = set_mujoco_actuation_startup(
                     cls.pkg_dir, cls.urdf_rel, enabled)
+                return self._send_json(payload)
+            except ValueError as e:
+                return self._send_json({"error": str(e)}, 400)
+            except OSError as e:
+                return self._send_json({"error": str(e)}, 500)
+        if parsed.path == "/api/set_spawn_height":
+            from .actuation_webserver import _read_json, set_mujoco_spawn_height
+            cls = type(self)
+            try:
+                data = _read_json(self)
+                payload = set_mujoco_spawn_height(
+                    cls.pkg_dir, cls.urdf_rel, data.get("height"))
                 return self._send_json(payload)
             except ValueError as e:
                 return self._send_json({"error": str(e)}, 400)
