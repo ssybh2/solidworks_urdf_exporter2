@@ -68,7 +68,6 @@ def _inventor_progress(msg):
     if low.startswith("opening ") or "inventor" in low and "connect" in low:
         _ws._prog_stage("connect Inventor")
     elif low.startswith("exporting mesh "):
-        # "exporting mesh i/n: name"
         try:
             count = low.split("exporting mesh ", 1)[1].split(":", 1)[0]
             i_s, n_s = count.split("/", 1)
@@ -100,9 +99,6 @@ def _run_inventor_extract(cad_path):
             f"connecting to Autodesk Inventor for {os.path.basename(cad_path)} ...")
         root = _InventorHandler.root_dir
         try:
-            # Prefer the user's already-running Inventor so opening a large model
-            # does not pay a second application startup.  If none is running,
-            # start a private automation instance instead.
             pkg = extract_inventor(cad_path, out_dir=root, attach=True,
                                    progress=_inventor_progress)
         except InventorUnavailable:
@@ -131,7 +127,6 @@ def _run_inventor_extract(cad_path):
         print("[sw2robot.web] Inventor extract CANCELLED")
     except Exception as e:
         import traceback
-
         _ws._job["error"] = f"{type(e).__name__}: {e}"
         _ws._job["running"] = False
         _ws._prog_finish(error=f"{type(e).__name__}: {e}")
@@ -178,27 +173,31 @@ def _send_fs(handler, target):
 
 
 class _InventorHandler(_ws._Handler):
-    """Intercept Inventor entry points + loop sidecar; delegate everything else."""
+    """Intercept Inventor entry points + loop/actuation sidecars."""
 
     def do_GET(self):
         parsed = urllib.parse.urlparse(self.path)
         path = parsed.path
         query = urllib.parse.parse_qs(parsed.query)
 
+        if path == "/api/actuation":
+            # Lazy import avoids a module cycle: actuation_webserver subclasses
+            # this handler, while direct inventor_webserver launches should still
+            # expose the exact same Motor/Passive API.
+            from .actuation_webserver import actuation_payload
+            cls = type(self)
+            return self._send_json(actuation_payload(cls.pkg_dir, cls.urdf_rel))
+
         if path == "/api/fs":
             target = (query.get("path") or [""])[0]
             return _send_fs(self, target)
 
         if path == "/api/loop_closures":
-            # The endpoint is intentionally read-only and package-local.  The
-            # sidecar contains no arbitrary path supplied by the browser.
             return self._send_json(_loop_closure_payload(type(self).pkg_dir))
 
         if path == "/api/configurations":
             target = (query.get("path") or [""])[0]
             if _is_inventor(target):
-                # Model State / iAssembly selection is a later feature.  Returning
-                # no alternatives makes the current UI proceed with the active model.
                 return self._send_json(
                     {"configurations": [], "source": "inventor"})
 
@@ -229,12 +228,28 @@ class _InventorHandler(_ws._Handler):
 
         return super().do_GET()
 
+    def do_POST(self):
+        parsed = urllib.parse.urlparse(self.path)
+        if parsed.path == "/api/set_actuated":
+            from .actuation_webserver import _read_json, set_actuated_joint
+            cls = type(self)
+            try:
+                data = _read_json(self)
+                joint = data.get("joint")
+                motor = data.get("motor")
+                if not isinstance(motor, bool):
+                    raise ValueError("motor must be true or false")
+                payload = set_actuated_joint(
+                    cls.pkg_dir, cls.urdf_rel, joint, motor)
+                return self._send_json(payload)
+            except ValueError as e:
+                return self._send_json({"error": str(e)}, 400)
+            except OSError as e:
+                return self._send_json({"error": str(e)}, 500)
+        return super().do_POST()
+
 
 def main():
-    # webserver.main()/serve() refer to the module-global _Handler class.  Swap
-    # it before entering upstream so all root/package state and helper functions
-    # consistently see our subclass.  The original implementation remains the
-    # source of truth for every non-Inventor route.
     _ws._Handler = _InventorHandler
     return _ws.main()
 
