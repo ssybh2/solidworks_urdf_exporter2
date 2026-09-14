@@ -72,6 +72,16 @@ function ensureActuationStyle() {
     }
     .jp-actuation-ui .act-mode.custom { color:#e8c468; }
     .jp-actuation-ui .act-mode.error { color:#ff7777; }
+    .mjcf-startup-actuation {
+      display:flex; align-items:center; gap:4px; color:#8a93a3; cursor:pointer;
+      font-size:11px; padding:1px 3px; border-radius:4px;
+    }
+    .mjcf-startup-actuation:hover { color:#cdd7e6; background:#1b2027; }
+    .mjcf-startup-actuation .act-start-state {
+      color:#6f7a88; font-size:10px; margin-left:2px;
+    }
+    .mjcf-startup-actuation .act-start-state.on { color:#e8c468; }
+    .mjcf-startup-actuation .act-start-state.err { color:#ff7777; }
   `;
   document.head.appendChild(st);
 }
@@ -223,6 +233,107 @@ if (linkInfoForActuation) {
   new MutationObserver(() => queueMicrotask(scanActuationPanel)).observe(
     linkInfoForActuation, { childList: true, subtree: true });
   queueMicrotask(scanActuationPanel);
+}
+
+// ---- MuJoCo startup actuation -------------------------------------------
+// Motor/Passive describes the robot hardware interface. This separate export
+// option describes whether those already-present actuators are energised as soon
+// as MuJoCo loads the model. OFF is the safe validation default: motors remain in
+// <actuator> (nu is unchanged), but MuJoCo globally disables actuator forces.
+let startupActuationRefresh = 0;
+
+function setStartupActuationUi(payload) {
+  const row = document.getElementById('mjcf-startup-actuation');
+  const box = document.getElementById('expactuationstartup');
+  const state = row?.querySelector('.act-start-state');
+  if (!row || !box || !state) { return; }
+  if (!payload?.supported) {
+    row.style.display = 'none';
+    return;
+  }
+  row.style.display = 'flex';
+  const enabled = !!payload.mujoco_actuation_enabled;
+  box.checked = enabled;
+  state.textContent = enabled ? 'ON at startup' : 'OFF at startup';
+  state.className = 'act-start-state' + (enabled ? ' on' : '');
+  row.title = enabled
+    ? 'Motor actuators will apply force immediately when MuJoCo starts.'
+    : 'Motor interfaces stay in the MJCF, but actuator forces start disabled. The robot can fall freely under gravity.';
+}
+
+async function refreshStartupActuationUi() {
+  const seq = ++startupActuationRefresh;
+  const row = document.getElementById('mjcf-startup-actuation');
+  if (!row) { return; }
+  try {
+    const payload = await fetchActuation('/api/actuation?v=' + Date.now());
+    if (seq !== startupActuationRefresh) { return; }
+    setStartupActuationUi(payload);
+  } catch (e) {
+    if (seq !== startupActuationRefresh) { return; }
+    const state = row.querySelector('.act-start-state');
+    if (state) {
+      state.textContent = 'API error';
+      state.className = 'act-start-state err';
+    }
+    row.title = e.message ?? String(e);
+  }
+}
+
+function ensureStartupActuationUi() {
+  if (document.getElementById('mjcf-startup-actuation')) { return; }
+  const fixedBase = document.getElementById('expfixedbase');
+  const fixedLabel = fixedBase?.closest('label');
+  if (!fixedLabel) { return; }
+  ensureActuationStyle();
+
+  const row = document.createElement('label');
+  row.id = 'mjcf-startup-actuation';
+  row.className = 'mjcf-startup-actuation';
+  row.innerHTML =
+    '<input id="expactuationstartup" type="checkbox">' +
+    '<span>Enable actuation on startup</span>' +
+    '<span class="act-start-state">checking</span>';
+  fixedLabel.insertAdjacentElement('afterend', row);
+
+  const box = row.querySelector('#expactuationstartup');
+  box.addEventListener('change', async () => {
+    const wanted = box.checked;
+    const state = row.querySelector('.act-start-state');
+    box.disabled = true;
+    state.textContent = 'saving…';
+    state.className = 'act-start-state';
+    try {
+      const payload = await fetchActuation('/api/set_actuation_startup', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: wanted }),
+      });
+      setStartupActuationUi(payload);
+      refreshHistory();
+      if (typeof log === 'function') {
+        log(`MuJoCo actuation on startup: ${wanted ? 'enabled' : 'disabled'} ✓`, 'ok');
+      }
+    } catch (e) {
+      box.checked = !wanted;
+      state.textContent = 'save failed';
+      state.className = 'act-start-state err';
+      row.title = e.message ?? String(e);
+      if (typeof log === 'function') {
+        log(`MuJoCo startup actuation update failed: ${e.message ?? e}`, 'err');
+      }
+    } finally {
+      box.disabled = false;
+    }
+  });
+
+  refreshStartupActuationUi();
+}
+
+ensureStartupActuationUi();
+const titleForActuation = document.getElementById('title');
+if (titleForActuation) {
+  new MutationObserver(() => refreshStartupActuationUi()).observe(
+    titleForActuation, { childList: true, characterData: true, subtree: true });
 }
 
 // ---- kick off -----------------------------------------------------------
