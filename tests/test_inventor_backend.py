@@ -5,6 +5,7 @@ import math
 
 import pytest
 
+from sw2robot.exporter.inertia import MM_TO_M, mesh_scale_for_path
 from sw2robot.exporter.inventor_backend.com import (
     KG_CM2_TO_KG_M2,
     matrix_si,
@@ -70,7 +71,13 @@ def test_matrix_translation_converts_cm_to_m_only():
 def test_xyz_inertia_reorders_and_converts_kg_cm2_to_kg_m2():
     got = xyz_inertia(_MassPropsFallback())
     s = KG_CM2_TO_KG_M2
-    assert got == pytest.approx([1*s, 4*s, 6*s, 2*s, 5*s, 3*s])
+    assert got == pytest.approx([1 * s, 4 * s, 6 * s, 2 * s, 5 * s, 3 * s])
+
+
+def test_inventor_stl_is_already_in_metres():
+    assert mesh_scale_for_path("meshes/link.stl") == 1.0
+    assert mesh_scale_for_path("meshes/composed.glb") == 1.0
+    assert mesh_scale_for_path("meshes/solidworks.3dxml") == MM_TO_M
 
 
 def test_rotational_joint_limits_stay_in_radians():
