@@ -1,449 +1,252 @@
-# sw2robot
+# sw2robot — Inventor 支持分支
 
-[![CI](https://github.com/jsk-ros-pkg/solidworks_urdf_exporter2/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/jsk-ros-pkg/solidworks_urdf_exporter2/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/jsk-ros-pkg/solidworks_urdf_exporter2)](https://github.com/jsk-ros-pkg/solidworks_urdf_exporter2/releases/latest)
-![Python](https://img.shields.io/badge/python-3.12+-blue.svg)
-![PyPI](https://img.shields.io/pypi/v/sw2robot.svg)
-[![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](https://github.com/jsk-ros-pkg/solidworks_urdf_exporter2/blob/main/LICENSE)
+这是 `inventor-support` 分支的 Windows 使用说明。
 
-[![Windows](https://img.shields.io/badge/Windows-download-0078D6?logo=windows&logoColor=white)](https://github.com/jsk-ros-pkg/solidworks_urdf_exporter2/releases/latest)
-[![macOS](https://img.shields.io/badge/macOS_(Apple_Silicon)-download-000000?logo=apple&logoColor=white)](https://github.com/jsk-ros-pkg/solidworks_urdf_exporter2/releases/latest)
-[![Linux](https://img.shields.io/badge/Linux_(x64)-download-FCC624?logo=linux&logoColor=black)](https://github.com/jsk-ros-pkg/solidworks_urdf_exporter2/releases/latest)
+本分支在原版 sw2robot 的基础上增加了 **Autodesk Inventor `.iam/.ipt` → graph.json + STL → Web Editor → URDF / MuJoCo MJCF** 的工作流。
 
-> Click an OS badge to grab the latest prebuilt editor from the release page.
-> Cross-platform for **edit / build / export**; the **extract** step (driving
-> SolidWorks over COM) is **Windows + SolidWorks only**.
+> 当前 Inventor 支持只在 `inventor-support` 分支中。请不要安装上游 Release 的普通 `sw2robot-web.exe` 来测试 Inventor，因为正式 Release 目前还不包含这个后端。
+>
+> 原项目的完整英文说明保存在 [`README_UPSTREAM.md`](README_UPSTREAM.md)，Inventor 后端的更详细说明见 [`examples/INVENTOR.md`](examples/INVENTOR.md)。
 
-**SolidWorks → robot (URDF) converter.** Turn a SolidWorks assembly into a
-URDF, then clean it up in the browser.
+## 1. Windows 电脑需要什么
 
-<p align="center">
-  <img src="https://raw.githubusercontent.com/jsk-ros-pkg/solidworks_urdf_exporter2/main/assets/solidworks-to-robot.gif" alt="SolidWorks → robot (URDF) editor demo">
-</p>
+建议使用 Windows 10/11 x64，并安装：
 
-One import package, with two subpackages:
+- **Autodesk Inventor**（用于读取 `.iam/.ipt`）
+- **Python 3.12 x64**
+- **Git**
 
-- **`sw2robot.exporter`** — the exporter. `extract` opens a throwaway copy of a `.sldasm`
-  in a hidden SolidWorks instance and pulls the kinematic graph + per-link
-  meshes into `graph.json` (slow, Windows + SolidWorks only). `build` turns that
-  `graph.json` into a URDF (fast, headless, no SolidWorks). The original CAD file
-  is never modified.
-- **`sw2robot.editor`** — a single-page browser editor on top of the graph: re-root the
-  tree, change joint types (incl. **Shift+drag box-select** to bulk-set a range),
-  edit root frames, set materials/densities, see **live self-collision** as you
-  drag, **auto joint limits** from a self-collision sweep, and export a ROS /
-  robot-compiler package.
-
-## How sw2robot relates to the classic exporter
-
-sw2robot builds on — and is inspired by — the great, long-standing
-[`solidworks_urdf_exporter`](https://github.com/ros/solidworks_urdf_exporter)
-SolidWorks add-in. The two tools solve the same first mile differently, and they
-**compose** rather than compete:
-
-- **The kinematic tree is inferred, not hand-built.** The classic add-in asks you
-  to lay out the link hierarchy and set each joint's origin and axis by hand
-  inside SolidWorks. sw2robot instead **reads the assembly's existing mates
-  (constraints)** to infer the link tree and joint axes automatically — then lets
-  you correct anything it got wrong in the browser editor, rather than building it
-  from scratch.
-- **Editing is cross-platform.** Only the *extract* step needs Windows +
-  SolidWorks; *edit / build / export* run natively on Windows, macOS, and Linux
-  from a single prebuilt binary — no SolidWorks and no Python.
-- **It also edits URDFs the classic exporter produced.** Already exporting with
-  the classic add-in? Open that `.urdf` in sw2robot's editor to re-root the tree,
-  retype joints, add limits/mimic, place end-coord frames, and re-export a ROS
-  package. sw2robot works on *any* URDF, not only its own output.
-- **An assembly the add-in already configured is read, not re-guessed.** The
-  add-in stores its whole configuration inside the `.SLDASM`; sw2robot finds it
-  and uses the authored link tree, names, frames and axes instead of inferring
-  them. Add `sw2urdf_config: sw2urdf_compat` to the joint config to go further and
-  reproduce the add-in's *own export* — its authored axis signs and the mass /
-  inertia it computed — so a migrated URDF matches the one you already have.
-
-Which one fits depends on your workflow, not on which is "better":
-
-| | classic `solidworks_urdf_exporter` | sw2robot |
-| --- | --- | --- |
-| Extract (assembly → URDF) | Windows + SolidWorks | Windows + SolidWorks |
-| Link tree & joint axes | set by hand in SolidWorks | inferred from mates, then edited |
-| Edit / build / export | inside SolidWorks (Windows) | Windows / macOS / Linux |
-| Edit an existing URDF | — | ✓ (any URDF, not just its own) |
-| Install | SolidWorks add-in | single prebuilt binary (no Python) |
-
-## Install in one line (no Python, no clone)
-
-A single command downloads the prebuilt editor for your OS, drops it on your
-`PATH` as `sw2robot-web`, and you're done. No Python, no cloning this repo.
-
-**Linux / macOS** — with `curl`:
-
-```bash
-curl -LsSf https://jsk-ros-pkg.github.io/solidworks_urdf_exporter2/install.sh | sh
-```
-
-…or with `wget` if you don't have `curl`:
-
-```bash
-wget -qO- https://jsk-ros-pkg.github.io/solidworks_urdf_exporter2/install.sh | sh
-```
-
-**Windows** — in PowerShell:
+如果没有 Python 3.12 或 Git，可以在 PowerShell 中安装：
 
 ```powershell
-powershell -ExecutionPolicy ByPass -c "irm https://jsk-ros-pkg.github.io/solidworks_urdf_exporter2/install.ps1 | iex"
+winget install -e --id Python.Python.3.12
+winget install -e --id Git.Git
 ```
 
-Then launch the editor (it opens `http://localhost:8090` in your browser —
-`xdg-open` on Linux, the default browser elsewhere):
+安装完成后重新打开 PowerShell，确认：
 
-```bash
-sw2robot-web
+```powershell
+py -3.12 --version
+git --version
 ```
 
-The installer picks the matching `sw2robot-web-<os>-<arch>` asset from the
-[latest release](https://github.com/jsk-ros-pkg/solidworks_urdf_exporter2/releases/latest),
-installs it to `~/.local/bin` (Windows: `%LOCALAPPDATA%\sw2robot\bin`), and adds
-that dir to `PATH` if needed. Knobs:
+## 2. 下载 Inventor 分支
 
-```bash
-# pin a version instead of latest
-SW2ROBOT_VERSION=v0.3.2 curl -LsSf https://jsk-ros-pkg.github.io/solidworks_urdf_exporter2/install.sh | sh
-# or, when piping:  ... | sh -s -- --version v0.3.2 --bin-dir /usr/local/bin
+在 PowerShell 中执行：
 
-# choose the install dir / don't touch any shell rc
-SW2ROBOT_INSTALL_DIR=/usr/local/bin SW2ROBOT_NO_MODIFY_PATH=1 curl -LsSf .../install.sh | sh
+```powershell
+cd $HOME
+git clone -b inventor-support --single-branch https://github.com/ssybh2/solidworks_urdf_exporter2.git
+cd solidworks_urdf_exporter2
 ```
 
-Prebuilt binaries currently ship for **Linux x64**, **Linux arm64**,
-**macOS (Apple Silicon)**, and **Windows x64**. Re-running the installer upgrades
-in place; the editor can
-also self-update from its own UI. Prefer to grab the file by hand, or need a
-different OS/arch? The per-OS steps below still apply.
+如果你以前已经 clone 过这个仓库：
 
-### Opening a `.urdf` with sw2robot
-
-The installer also registers a `.urdf` file association, so you can hand a URDF
-straight to the editor the same way on Linux and macOS:
-
-```bash
-xdg-open robot.urdf      # Linux
-open robot.urdf          # macOS
+```powershell
+cd 你的仓库路径
+git fetch origin
+git switch inventor-support
+git pull origin inventor-support
 ```
 
-Either launches the editor with that URDF loaded (URDF-input mode). A `.urdf`
-also gets an **Open With → sw2robot** entry in the file manager / Finder, and
-sw2robot shows up in your application menu. Pass `SW2ROBOT_NO_DESKTOP=1` to the
-installer (or `--no-desktop`) to skip this. Linux needs `xdg-utils` installed
-for the association; without it the binary still installs and the step is
-skipped with a note.
+## 3. 安装 sw2robot
 
-## Quick start — download the Windows `.exe` (no Python)
+下面的命令**不需要执行 `Activate.ps1`**，因此即使 PowerShell Execution Policy 比较严格也可以使用。
 
-If you just want to convert a SolidWorks assembly, you don't need to install
-Python or clone this repo. Grab the prebuilt editor and run it:
-
-1. **Download.** Go to the
-   [latest release](https://github.com/jsk-ros-pkg/solidworks_urdf_exporter2/releases/latest)
-   and download `sw2robot-web-windows-x64-v<version>.exe` (under *Assets*).
-   It's a single self-contained file — nothing to install.
-2. **Run it.** Double-click the `.exe`. A console window opens, a local server
-   starts, and your default browser opens the editor at
-   `http://localhost:8090` automatically.
-   - Windows SmartScreen may warn that the publisher is unknown (the binary is
-     unsigned). Click **More info → Run anyway**.
-   - To pick a different port or skip auto-opening the browser, run it from a
-     terminal: `sw2robot-web-windows-x64-v<version>.exe --port 9000 --no-browser`.
-3. **Extract a robot.** Open your `.sldasm` assembly with the in-app file
-   picker — the **🗄 file browser** (lists SolidWorks' recent files for
-   one-click access) or **📋 paste a full path**. SolidWorks needs the real
-   on-disk path to resolve referenced parts, which a browser never exposes for
-   a drag-and-dropped file, so the editor opens by path rather than by drop.
-   The app drives a hidden SolidWorks instance to pull the kinematic graph +
-   meshes. Your original CAD file is never modified. Extracted packages are
-   written to `%TEMP%\sw2robot\output`.
-   - **The extract step needs SolidWorks installed on the same machine** — the
-     app talks to it over COM; it does not embed SolidWorks.
-   - No SolidWorks? You can still open and edit an already-extracted package,
-     and the build / export steps work without it.
-4. **Clean it up.** In the editor: re-root the tree, set joint types
-   (Shift+drag to bulk-set a range), edit the root frame, set materials and
-   densities, watch live self-collision as you drag joints, and run the
-   auto joint-limit sweep.
-5. **Export.** Export a ROS / robot-compiler package (URDF + meshes + configs)
-   from the editor, ready to drop into your workspace.
-
-Closing the console window stops the server and tears down the SolidWorks
-instance it spawned.
-
-## Quick start — macOS / Linux (no SolidWorks)
-
-SolidWorks does not run on macOS / Linux, so the `extract` step (assembly →
-graph) is Windows-only. **Everything else — open & edit an already-extracted
-package, open & edit *any* URDF, build, and export — runs natively** on macOS
-and Linux.
-
-**Option A — download the prebuilt editor** (no Python). Grab the asset for
-your OS from the [latest release](https://github.com/jsk-ros-pkg/solidworks_urdf_exporter2/releases/latest)
-(under *Assets*):
-
-**macOS (Apple Silicon)** — `sw2robot-web-macos-arm64-v<version>.zip`. Unzip it
-to get `sw2robot-web.app`; double-click to launch (it opens the editor in your
-browser at `http://localhost:8090`).
-
-```bash
-# Gatekeeper blocks unsigned apps on first launch — clear the quarantine once,
-# then double-click, or run it from a terminal to see the server log / URL:
-xattr -dr com.apple.quarantine sw2robot-web.app
-./sw2robot-web.app/Contents/MacOS/sw2robot-web
+```powershell
+py -3.12 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install --upgrade pip
+.\.venv\Scripts\python.exe -m pip install -e .
 ```
 
-**Linux (x64)** — `sw2robot-web-linux-x64-v<version>` (a single binary):
+如果你还想使用完整的自碰撞检测、自动关节极限和 CoACD 功能，可以再安装可选组件：
 
-```bash
-chmod +x sw2robot-web-linux-x64-v<version>          # mark it executable once
-./sw2robot-web-linux-x64-v<version>                 # opens http://localhost:8090
+```powershell
+.\.venv\Scripts\python.exe -m pip install -e ".[ui,coacd]"
 ```
 
-The binary is frozen against GLIBC 2.35, so it runs on **Ubuntu 22.04 or newer**
-(22.04, 24.04, …).  On older distros you may hit a `GLIBC_2.xx not found` error
-at launch — in that case run from source (Option B below) instead.
+可选组件安装失败不会影响最基本的 Inventor → URDF/MJCF 转换，可以先只使用 `pip install -e .`。
 
-**Option B — run from source** (see [Install from source](#install-from-source-developers)
-below):
+## 4. 推荐：启动网页编辑器
 
-```bash
-pip install -e ".[ui]"
-# edit an already-extracted package, or open any URDF directly:
-python -m sw2robot.editor.webserver path/to/robot.urdf
+执行：
+
+```powershell
+.\.venv\Scripts\sw2robot-web.exe
 ```
 
-The editor opens in URDF-input mode when you point it at a `.urdf` file: re-root,
-retype joints, set mimic/limits/materials, add end-coord ports, and re-export a
-ROS package — then closing the tab leaves your original `.urdf` untouched.
+然后浏览器会打开：
 
-## Editor — features & keyboard shortcuts
+```text
+http://localhost:8090
+```
 
-Everything below edits the package server-side and rebuilds the URDF in place
-(~0.5 s), so the viewer always shows the real exported result.
+如果没有自动打开，就手动在浏览器输入上面的地址。
 
-**Kinematics**
+### 在网页中打开 Inventor 文件
 
-- **Make root** — pick any link and make it the base; the tree is re-rooted and
-  every edge between the old and new root is flipped automatically.
-- **Joint types** — toggle a joint fixed ↔ movable, or **Shift+drag** a box over
-  the tree to bulk-set a whole range at once.
-- **Flip axis** — reverse a joint's positive direction in one keystroke.
-- **Mimic** — link follower joints to a master so they move together; set a
-  **multiplier** and **offset** per follower (URDF `<mimic>`). Move the master
-  and the followers track it live.
-- **Delete subtree** — drop a link and everything below it.
-- **Actuator & physics** — per movable joint, set `<limit>` effort/velocity and
-  the optional URDF `<dynamics>` (damping/friction), `<safety_controller>`
-  (soft limits, k_position, k_velocity) and `<calibration>` (rising/falling).
-  Blank fields stay unset. Persisted in `joints.yaml`, so they survive a
-  re-extract (or hand-edit the same keys under each joint in `joints.yaml`).
+1. 点击页面里的文件浏览器。
+2. 找到你的 Inventor 文件：
+   - `.iam`：Inventor Assembly，推荐用于机器人。
+   - `.ipt`：Inventor Part，会作为单 link 模型处理。
+3. 点击 `.iam/.ipt`。
+4. sw2robot 会调用 Inventor COM API，读取零件、装配变换、质量/质心/惯量、UCS 和关节信息，并导出 STL。
+5. 抽取完成后会自动进入原来的 sw2robot Web Editor。
+6. 在网页中检查/修改 root、joint type、axis、limit、mass、collision 等。
+7. 最后从网页导出 URDF / ROS package / MuJoCo MJCF。
 
-**Coordinate frames**
+如果 Inventor 已经打开，可以保持它运行；本分支会优先尝试复用正在运行的 Inventor。没有运行时会尝试启动 Inventor COM 实例。
 
-- **Root frame** — rotate the root about its current axes or type exact numbers;
-  or click a face to **align the root** to it (origin = face center). Written as
-  `root_rpy` / `root_xyz` in `joints.yaml`.
-- **⊕ Port (end-coords)** — click a face to drop a named, coordinate-only link
-  there with **+Z = the face normal**, then nudge it with the gizmo
-  (`g` move / `r` rotate) and **Place**. Handy for end-effector, sensor, or
-  mount frames. Click a magenta marker to remove one. Stored under `ports:` in
-  `joints.yaml`.
-- **Export shape + weight?** — the checkbox on each link row in the joint tree.
-  Uncheck it for a CAD-only part (a `dummy_axis` drawn just to carry a joint
-  axis): the link and its joint stay in the tree, but the URDF gets a bare
-  frame — no `<visual>`, no `<collision>`, no `<inertial>`. Stored as
-  `frame_only:` in `joints.yaml`. (Different from **mass-only**, which keeps the
-  weight and only works on a fixed child.)
-- **CAD coordinate systems** — every named SolidWorks coordinate system (in the
-  assembly, a sub-assembly, or inside a part file) becomes one of these
-  coordinate-only links automatically, on the part it was drawn in — or, for a
-  frame drawn in the top-level assembly, on the component its origin was picked
-  from. Turn it off or pick a subset with `coordinate_system_links: off | all |
-  [<name>, ...]` in `joints.yaml`; the default skips frames an embedded SW2URDF
-  config already uses as link origins.
+## 5. 命令行直接转换
 
-**Authoring aids** — live self-collision highlight as you drag a joint, an
-**auto joint-limit** sweep, per-link materials/densities, a `tf` view (frame
-triads + parent links), and a sizeable ground grid.
+如果不想先开网页，也可以直接转换 `.iam`。
 
-**Navigation** — left-drag orbits, right-drag pans, the wheel dollies right into
-the assembly so you can inspect internal parts. **Double-click a link** to make
-it the orbit centre (then orbit and zoom around that part); press **`v`** to
-recentre the orbit on it, or **`c`** for a full view reset.
+### 生成 URDF
 
-**Keyboard shortcuts** (with a link selected or hovered):
+```powershell
+.\.venv\Scripts\inv2robot.exe "D:\CAD\my_robot.iam" -o "D:\robot_export"
+```
 
-| Key | Action |
+输出目录会类似：
+
+```text
+D:\robot_export\my_robot\
+    graph.json
+    meshes\
+    urdf\my_robot.urdf
+```
+
+### 同时生成 MuJoCo MJCF
+
+```powershell
+.\.venv\Scripts\inv2robot.exe "D:\CAD\my_robot.iam" -o "D:\robot_export" --mujoco
+```
+
+固定在世界上的机械臂/平台可以使用：
+
+```powershell
+.\.venv\Scripts\inv2robot.exe "D:\CAD\my_robot.iam" -o "D:\robot_export" --mujoco --mujoco-fixed-base
+```
+
+### 复用已经打开的 Inventor
+
+```powershell
+.\.venv\Scripts\inv2robot.exe "D:\CAD\my_robot.iam" --attach --mujoco
+```
+
+### 只抽取 CAD，之后再进网页编辑
+
+```powershell
+.\.venv\Scripts\inv2robot.exe "D:\CAD\my_robot.iam" -o "D:\robot_export" --extract-only
+.\.venv\Scripts\sw2robot-web.exe
+```
+
+## 6. Inventor 里面怎样建模最容易识别
+
+为了让机器人关节自动识别得更可靠，优先使用 Inventor 的 **Assembly Joint**：
+
+| Inventor | sw2robot / URDF |
 | --- | --- |
-| `t` | toggle joint **fixed ↔ movable** |
-| `f` | **flip** the joint axis / direction |
-| `m` | start **mimic** linking (then click followers · `Enter`/`m` apply · `Esc` cancel) |
-| `r` / `R` | **make root** at this link |
-| `Del` / `Backspace` | delete the link **+ its subtree** |
-| `0` / `Home` | reset **pose** (all joints to 0) |
-| `c` | reset the **view** (pose, iso camera, orbit back on the model) |
-| `v` | **recentre** the orbit on the focused link (or model), keeping your angle/zoom |
-| `Esc` | clear selection / cancel the current mode |
-| `click` · `dbl-click` · `Shift+drag` | select · **focus** (orbit around it + jump to its tree row) · box-select a range |
-| mouse | left-drag orbit · right-drag pan · wheel zoom (dollies right inside the model) |
+| Rigid | fixed |
+| Rotational | revolute |
+| Slider | prismatic |
+| Locked | fixed |
 
-In a port/end-coords placement session the gizmo owns the keys: `g` move,
-`r` rotate, `Esc` cancel.
+建议给 IMU、相机、末端执行器、脚底等重要位置创建并命名 **UCS (User Coordinate System)**，例如：
 
-## Install from source (developers)
-
-Prefer this if you want to hack on sw2robot or run it on a non-Windows machine
-(view / edit / build / export work anywhere; only *extract* needs Windows +
-SolidWorks).
-
-```bash
-pip install -e .            # core: extract / build / web editor (view+edit)
-pip install -e ".[ui]"      # + live collision highlight, auto joint-limits
+```text
+UCS_IMU
+UCS_CAMERA
+UCS_TCP
+UCS_FOOT_FL
 ```
 
-`[ui]` adds `python-fcl` (collision queries); `scikit-robot` (FK, primitive
-fitting) is a core dependency. The editor's view / edit / extract / build work
-without `[ui]`; collision and auto-limits just report "not available" until it
-is installed.
+这些 UCS 会被读取到 sw2robot 的坐标系数据中。
 
-## Use
+## 7. 当前 Inventor 版本的限制
 
-**Extract a `.sldasm` -> URDF** (Windows, with SolidWorks installed):
+这是实验性第一版，建议先用一个简单机器人验证。
 
-```bash
-python -m sw2robot.exporter.export path/to/assembly.sldasm -o output
+- `Rigid / Rotational / Slider` Assembly Joint 支持最好。
+- `Cylindrical / Planar / Ball` 属于多自由度关节，目前保守处理为 fixed，并给出警告。
+- 传统 `Mate / Flush / Angle / Tangent` 约束的自动推断暂时没有 SolidWorks 后端那么完整；`Insert` 已有基础识别。
+- 可运动子装配的内部结构目前还没有完整递归展开。
+- Inventor Model States / iAssembly 暂时没有映射成 sw2robot configuration。
+- 目前还需要在真实 Inventor `.iam` 模型上继续做端到端验证。
+
+## 8. 常见问题
+
+### `py -3.12` 找不到
+
+安装 Python 3.12 x64，然后**关闭并重新打开 PowerShell**：
+
+```powershell
+winget install -e --id Python.Python.3.12
 ```
 
-**Or a single `.sldprt` -> URDF.** Point the exact same command (or the editor's
-🗄 file browser / 📋 path bar) at a lone part instead of an assembly:
+### PowerShell 不允许执行脚本
 
-```bash
-python -m sw2robot.exporter.export path/to/part.sldprt -o output
+本 README 的命令不要求执行：
+
+```powershell
+.\.venv\Scripts\Activate.ps1
 ```
 
-A single part has no mates to infer a kinematic tree from, so this yields a
-trivial **1-link, 0-joint URDF** — one rigid body with the part's mesh and its
-**SolidWorks-native mass / centre-of-mass / inertia tensor** (exact CAD geometry
-+ material, not a mesh estimate). Handy for a static prop, an environment
-object, or a single end-effector/sensor body you want in a simulator with an
-accurate inertial. It will not turn a multibody part into a jointed robot — that
-needs an assembly with mates.
+直接使用：
 
-**Open the browser editor** on an already-extracted package (no SolidWorks
-needed — a sample is included):
-
-```bash
-python -m sw2robot.editor.webserver examples/fingertip
-# then open http://localhost:8090
+```powershell
+.\.venv\Scripts\python.exe
+.\.venv\Scripts\sw2robot-web.exe
+.\.venv\Scripts\inv2robot.exe
 ```
 
-From the editor you can also extract a fresh package: open a `.sldasm` with the
-in-app file picker (🗄 file browser of SolidWorks' recent files, or 📋 paste a
-full path) and it drives SolidWorks for you. It opens by real on-disk path —
-not by browser drag-and-drop, which never exposes the path SolidWorks needs to
-resolve referenced parts.
+即可。
 
-**Headless build / edit / export** (no GUI):
+### Inventor 连接失败
 
-```bash
-python -m sw2robot.editor            # see the CLI
+先手动启动 Autodesk Inventor，并打开目标 `.iam`，然后测试：
+
+```powershell
+.\.venv\Scripts\inv2robot.exe "D:\CAD\my_robot.iam" --attach --extract-only
 ```
 
-**Export a MuJoCo model.** `--mujoco` writes a standalone `<robot>_mjcf`
-package — an MJCF model plus its binary-STL assets — next to the URDF one, and
-the editor has the same thing as a **⬇ MuJoCo (MJCF)** button:
+### 网页文件浏览器里看不到 `.iam/.ipt`
 
-```bash
-# straight from the assembly
-python -m sw2robot.exporter.export path/to/assembly.sldasm -o output --mujoco
+先确认当前确实在这个分支：
 
-# or from an already-extracted package (no SolidWorks)
-python -m sw2robot.exporter.build output/<robot> --mujoco
+```powershell
+git branch --show-current
+git pull origin inventor-support
 ```
 
-A URDF that loads in RViz is not yet a model you can train on, so the export
-does more than change file format. It merges fixed links (MuJoCo has no use for
-one body per screw), then derives from the CAD itself:
+应该显示：
 
-* **per-joint damping** of `effort / velocity` — the torque-speed slope of that
-  joint's own servo, so a leg cannot be swung faster in sim than the real motor
-  can drive it;
-* **a contact sphere per foot**, sized from that foot's own contact patch and
-  tangent to its lowest point, because the convex hull of a flat bracket end
-  gives contact points that jump around under a walking policy;
-* **an IMU site and the sensors a locomotion task looks up by name**
-  (`imu_ang_vel`, `imu_lin_vel`, `imu_lin_acc`, `root_angmom`);
-* **a `home` keyframe** whose base height is computed so nothing starts below
-  the floor.
-
-The base floats by default. `--mujoco-fixed-base` welds it to the world for an
-arm bolted to a table — which also drops the foot spheres and the IMU, both
-legged-robot features. `--mujoco-armature` takes the reflected rotor inertia,
-the one number a CAD model cannot supply (it depends on the motor and the gear
-ratio), and defaults to 0. `--collision` applies here as it does to the ROS
-package.
-
-Feeding it to an RL framework that brings its own actuator model (mjlab, say,
-which deletes the MJCF's actuators and keyframe and substitutes its own) needs
-two things: `--mujoco-no-backemf-damping`, so the joint is not damped twice, and
-foot names that match what the task config selects on. The contact sphere and
-site are named after the link (`FL_foot_toe`, `FL_foot`) unless you say
-otherwise; `write_mjcf_package(foot_links={"FL_foot": "FL", ...})` names them
-after the leg instead (`FL_toe`, `FL`), which is the usual locomotion-task
-convention.
-
-The MJCF itself is written by
-[`skrobot.urdf.urdf_to_mjcf`](https://github.com/iory/scikit-robot), which is
-also where the per-joint damping and the measured base height come from. Real
-CAD meshes routinely include shapes MuJoCo's compiler refuses — a material-split
-single triangle, a stamped part with zero enclosed volume, a perfectly flat
-sheet — so this needs **scikit-robot 0.3.34 or newer**; on 0.3.33 such an
-assembly fails with `mesh volume is too small` or `at least 4 vertices
-required`.
-
-**Fast re-extract while debugging.** Keep the assembly open in SolidWorks, then:
-
-```bash
-# reuse the running SolidWorks (skips the multi-minute reopen)
-python -m sw2robot.exporter.extract path/to/assembly.sldasm --attach
-
-# refresh ONLY coordinate systems / reference axes in graph.json (seconds)
-python -m sw2robot.exporter.extract output/<robot> --refresh frames --attach
+```text
+inventor-support
 ```
 
-## Layout
+然后重新安装一次 editable package：
 
-```
-sw2robot/                one import package (pip install sw2robot)
-  exporter/              SolidWorks -> graph.json -> URDF
-  editor/                the browser editor (server + single-page web/index.html)
-    _vendor/rc_config/   vendored ROS/MoveIt/Gazebo config generators
-examples/fingertip/      a small pre-extracted package to try the editor offline
-tests/                   pytest (sw2robot.exporter classification) + tests/e2e (puppeteer UI suite)
+```powershell
+.\.venv\Scripts\python.exe -m pip install -e .
 ```
 
-## Tests
+再重新启动：
 
-```bash
-PYTHONPATH= pytest                       # sw2robot.exporter unit tests
-cd tests/e2e && npm i && node run.mjs    # UI suite (needs a running sw2robot-web + Chrome)
+```powershell
+.\.venv\Scripts\sw2robot-web.exe
 ```
 
-Some pytest fixtures expect a cached `output/<pkg>/graph.json`; those skip when
-absent.
+## 最短使用流程
 
-## Contributing
+已经安装 Python 3.12、Git 和 Autodesk Inventor 的情况下，只需要：
 
-Please read [CONTRIBUTING.md](https://github.com/jsk-ros-pkg/solidworks_urdf_exporter2/blob/main/CONTRIBUTING.md) before opening an issue or pull
-request. In short: discuss first via an issue, keep PRs small and focused,
-attach a demo video for UI changes, and disclose any AI usage.
+```powershell
+git clone -b inventor-support --single-branch https://github.com/ssybh2/solidworks_urdf_exporter2.git
+cd solidworks_urdf_exporter2
+py -3.12 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -e .
+.\.venv\Scripts\sw2robot-web.exe
+```
 
-## License
-
-[Apache License 2.0](https://github.com/jsk-ros-pkg/solidworks_urdf_exporter2/blob/main/LICENSE) © 2026 Iori Yanokura
+然后打开浏览器中的 `http://localhost:8090`，选择你的 `.iam` 文件即可。
