@@ -55,6 +55,9 @@ def native_joints(definition, names):
         d = safe_prop(joint, "Definition")
         if d is None:
             continue
+        # AffectedOccurrence* is the assembly-context occurrence Autodesk says
+        # should be used for adaptive/nested relationships.  Fall back to the
+        # owning occurrence for older/simple documents.
         o1 = safe_prop(joint, "AffectedOccurrenceOne") or safe_prop(joint, "OccurrenceOne")
         o2 = safe_prop(joint, "AffectedOccurrenceTwo") or safe_prop(joint, "OccurrenceTwo")
         a, b = occ_name(o1), occ_name(o2)
@@ -91,14 +94,49 @@ def native_joints(definition, names):
     return edges, limits, ground, covered, warnings
 
 
+def _constraint_occurrence(constraint, which):
+    """Return an assembly-context occurrence for a classic constraint."""
+    return (safe_prop(constraint, f"AffectedOccurrence{which}")
+            or safe_prop(constraint, f"Occurrence{which}"))
+
+
+def _constraint_axis(constraint):
+    """Return (point, direction) in TOP-LEVEL ASSEMBLY coordinates.
+
+    Autodesk documents AssemblyConstraint.GeometryOne/GeometryTwo as geometry
+    expressed in assembly space.  EntityOne/EntityTwo can be definition-context
+    entities, so using those directly as world coordinates makes a URDF joint
+    pivot around a remote/wrong point.  Always prefer Geometry* and keep Entity*
+    only as a compatibility fallback.
+    """
+    for suffix in ("One", "Two"):
+        geom = safe_prop(constraint, f"Geometry{suffix}")
+        point, axis = geometry_point(geom), geometry_direction(geom)
+        if point is not None and axis is not None:
+            return point, axis
+    for suffix in ("One", "Two"):
+        entity = safe_prop(constraint, f"Entity{suffix}")
+        point, axis = geometry_point(entity), geometry_direction(entity)
+        if point is not None and axis is not None:
+            return point, axis
+    return None, None
+
+
 def classic_constraints(definition, names, covered):
-    """Fallback: classic Insert constraints -> revolute; other pairs -> fixed."""
+    """Fallback: classic Insert constraints -> revolute; other pairs -> fixed.
+
+    InsertConstraint is treated as an explicit 1-DOF joint.  Other classic
+    constraints describe assembly relationships but are deliberately NOT marked
+    ``force_fixed``: a mate/flush/alignment constraint can be part of a loop
+    around a real Insert joint, and making every such edge high-priority rigid
+    lets the spanning tree bypass (and therefore drop) a real motor joint.
+    """
     grouped, ground = defaultdict(list), set()
     for constraint in iter_collection(safe_prop(definition, "Constraints")):
         if bool(safe_prop(constraint, "Suppressed", False)):
             continue
-        a = occ_name(safe_prop(constraint, "OccurrenceOne"))
-        b = occ_name(safe_prop(constraint, "OccurrenceTwo"))
+        a = occ_name(_constraint_occurrence(constraint, "One"))
+        b = occ_name(_constraint_occurrence(constraint, "Two"))
         if a not in names or b not in names:
             grounded = b if a not in names else a
             if grounded in names:
@@ -115,15 +153,12 @@ def classic_constraints(definition, names, covered):
         insert = next((c for c, _, _ in records
                        if safe_prop(c, "AxesOpposed", None) is not None), None)
         if insert is None:
-            edges[key] = MateEdge(a=a, b=b, types=["INVENTOR_CONSTRAINT"],
-                                  force_fixed=True)
+            edges[key] = MateEdge(a=a, b=b, types=["INVENTOR_CONSTRAINT"])
             continue
-        entity = safe_prop(insert, "EntityOne")
-        point, axis = geometry_point(entity), geometry_direction(entity)
-        if point is None or axis is None:
-            entity = safe_prop(insert, "EntityTwo")
-            point = point or geometry_point(entity)
-            axis = axis or geometry_direction(entity)
+
+        # GeometryOne/Two are documented by Autodesk as ASSEMBLY-SPACE geometry
+        # and are therefore the correct URDF world-axis source.
+        point, axis = _constraint_axis(insert)
         point, axis = point or [0., 0., 0.], axis or [0., 0., 1.]
         edges[key] = MateEdge(a=a, b=b, types=["INVENTOR_INSERT"],
                               axis_point=point, axis_dir=axis)
