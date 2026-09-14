@@ -38,11 +38,10 @@ import './loop-closure.js';
 import './unicode-labels.js';
 
 // ---- Motor / Passive -----------------------------------------------------
-// The exporter already understands joints.yaml:actuated_joints.  Surface that
-// setting directly in the focused joint panel without changing the joint type
-// or the closed-loop independent/dependent solver classification.
+// The exporter already understands joints.yaml:actuated_joints. Surface that
+// setting directly in the focused joint panel without changing joint type or
+// closed-loop dependent/independent solver classification.
 const ACT_STYLE_ID = 'sw2robot-actuation-style';
-let actuationRequest = 0;
 
 function ensureActuationStyle() {
   if (document.getElementById(ACT_STYLE_ID)) { return; }
@@ -105,6 +104,29 @@ function applyActuationState(row, payload, joint) {
   row.dataset.motor = isMotor ? '1' : '0';
 }
 
+async function fetchActuation(url, options = {}, timeoutMs = 5000) {
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), timeoutMs);
+  try {
+    const resp = await fetch(url, { ...options, signal: ctl.signal });
+    const text = await resp.text();
+    let payload = {};
+    try { payload = text ? JSON.parse(text) : {}; }
+    catch { throw new Error(`invalid API response (${resp.status})`); }
+    if (!resp.ok || payload.error) {
+      throw new Error(payload.error ?? `HTTP ${resp.status}`);
+    }
+    return payload;
+  } catch (e) {
+    if (e?.name === 'AbortError') {
+      throw new Error('actuation API timeout');
+    }
+    throw e;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function wireActuationRow(panel) {
   if (!panel || panel.querySelector('.jp-actuation-ui') || !actuationMovable(panel)) {
     return;
@@ -128,57 +150,65 @@ async function wireActuationRow(panel) {
   if (typeRow) { typeRow.insertAdjacentElement('afterend', row); }
   else { panel.appendChild(row); }
 
-  const token = ++actuationRequest;
   const buttons = [...row.querySelectorAll('.act-choice')];
   buttons.forEach(b => { b.disabled = true; });
   try {
-    const resp = await fetch('/api/actuation?v=' + Date.now());
-    const payload = await resp.json();
-    if (token !== actuationRequest || !row.isConnected) { return; }
-    if (!resp.ok || payload.error) { throw new Error(payload.error ?? resp.status); }
+    const payload = await fetchActuation('/api/actuation?v=' + Date.now());
+    // The panel can be rebuilt while the request is in flight. Never use a
+    // global request counter: it can invalidate the currently-visible row and
+    // leave its buttons disabled forever. Only this row's DOM lifetime matters.
+    if (!row.isConnected || actuationJointName(panel) !== joint) { return; }
     if (!payload.supported || !(payload.movable || []).includes(joint)) {
       row.remove();
       return;
     }
     applyActuationState(row, payload, joint);
-    buttons.forEach(b => { b.disabled = false; });
   } catch (e) {
     if (!row.isConnected) { return; }
     const mode = row.querySelector('.act-mode');
-    mode.textContent = 'unavailable';
+    mode.textContent = 'API error';
     mode.className = 'act-mode error';
-    buttons.forEach(b => { b.disabled = true; });
-    return;
+    row.title = e.message ?? String(e);
+    if (typeof log === 'function') {
+      log(`Motor/Passive status failed: ${e.message ?? e}`, 'err');
+    }
+  } finally {
+    // Even on an API error, never trap the UI in cursor:wait. Clicking a choice
+    // retries through POST and will show a concrete save error if the backend is
+    // genuinely unavailable.
+    if (row.isConnected) { buttons.forEach(b => { b.disabled = false; }); }
   }
 
   for (const button of buttons) {
     button.addEventListener('click', async () => {
       const wantMotor = button.dataset.act === 'motor';
-      if ((row.dataset.motor === '1') === wantMotor) { return; }
+      if (row.dataset.motor != null
+          && (row.dataset.motor === '1') === wantMotor) { return; }
       buttons.forEach(b => { b.disabled = true; });
       const mode = row.querySelector('.act-mode');
       mode.textContent = 'saving…';
       mode.className = 'act-mode';
       try {
-        const resp = await fetch('/api/set_actuated', {
+        const payload = await fetchActuation('/api/set_actuated', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ joint, motor: wantMotor }),
         });
-        const payload = await resp.json();
-        if (!resp.ok || payload.error) { throw new Error(payload.error ?? resp.status); }
+        if (!row.isConnected) { return; }
         applyActuationState(row, payload, joint);
         refreshHistory();
         if (typeof log === 'function') {
           log(`${joint}: ${wantMotor ? 'Motor' : 'Passive'} ✓`, 'ok');
         }
       } catch (e) {
+        if (!row.isConnected) { return; }
         mode.textContent = 'save failed';
         mode.className = 'act-mode error';
+        row.title = e.message ?? String(e);
         if (typeof log === 'function') {
           log(`Motor/Passive update failed: ${e.message ?? e}`, 'err');
         }
       } finally {
-        buttons.forEach(b => { b.disabled = false; });
+        if (row.isConnected) { buttons.forEach(b => { b.disabled = false; }); }
       }
     });
   }
@@ -199,7 +229,7 @@ if (linkInfoForActuation) {
 // ---- kick off -----------------------------------------------------------
 // live SolidWorks session: only attachable when THIS SERVER was started
 // from the user's own terminal (same login session); otherwise we show why
-let _swStatus = null;          // last /api/swstatus payload, for re-rendering
+let _swStatus = null;
 export function renderSwStatus() {
   const st = _swStatus;
   if (!st) { return; }
@@ -208,7 +238,6 @@ export function renderSwStatus() {
   if (st.active_assembly) {
     btn.style.display = '';
     btn.title = st.active_assembly;
-    // the path/filename is a real on-disk identifier -- never translated
     el.textContent = (st.dirty ? t('sw.unsaved') : '') +
       t('sw.open', { name: st.active_assembly.split(/[\\/]/).pop() });
   } else if (st.running && !st.attachable) {
