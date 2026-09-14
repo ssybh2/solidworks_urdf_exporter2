@@ -5,7 +5,11 @@ The exporter already treats top-level ``actuated_joints:`` in a CAD package's
 module exposes that existing setting to the browser without changing the CAD
 kinematic graph or the closed-loop dependent/independent solver roles.
 
-``sw2robot-web`` points here.  Everything except the two actuation endpoints is
+It also exposes ``mujoco_actuation_enabled``.  Motor joints keep their actuator
+interfaces regardless of this flag; the flag only decides whether MuJoCo lets
+those actuators apply force immediately when the exported model is loaded.
+
+``sw2robot-web`` points here.  Everything except the actuation endpoints is
 delegated to :mod:`sw2robot.editor.inventor_webserver`.
 """
 from __future__ import annotations
@@ -49,6 +53,15 @@ def _load_config(path):
     except Exception:
         return {}
     return cfg if isinstance(cfg, dict) else {}
+
+
+def _config_bool(cfg, key, default=False):
+    raw = cfg.get(key, default)
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, str):
+        return raw.strip().lower() in {"1", "true", "yes", "on", "enable", "enabled"}
+    return bool(raw)
 
 
 def _movable_joints(pkg_dir, urdf_rel):
@@ -130,6 +143,10 @@ def actuation_payload(pkg_dir, urdf_rel):
         "movable": movable,
         "actuated": actuated,
         "passive": [name for name in movable if name not in selected],
+        # Default False is intentional: Motor means "has an actuator interface";
+        # it does not mean "energise it immediately when the model is loaded".
+        "mujoco_actuation_enabled": _config_bool(
+            cfg, "mujoco_actuation_enabled", False),
     }
 
 
@@ -137,6 +154,17 @@ def _strip_inline_actuated_list(text):
     """Normalize ``actuated_joints: [...]`` before the block-list helper runs."""
     return re.sub(
         r"(?m)^actuated_joints:\s*\[[^\n]*\]\s*(?:\n|$)", "", text)
+
+
+def _set_top_level_bool(text, key, enabled):
+    """Set one top-level YAML bool while leaving the rest of the file alone."""
+    line = f"{key}: {'true' if enabled else 'false'}"
+    pat = re.compile(rf"(?m)^{re.escape(key)}:\s*[^\n]*(?:\n|$)")
+    if pat.search(text):
+        return pat.sub(line + "\n", text, count=1)
+    if text and not text.endswith("\n"):
+        text += "\n"
+    return text + line + "\n"
 
 
 def set_actuated_joint(pkg_dir, urdf_rel, joint, motor):
@@ -198,6 +226,37 @@ def set_actuated_joint(pkg_dir, urdf_rel, joint, motor):
     return actuation_payload(pkg_dir, urdf_rel)
 
 
+def set_mujoco_actuation_startup(pkg_dir, urdf_rel, enabled):
+    """Persist whether exported MuJoCo actuators are energised at model load."""
+    status = actuation_payload(pkg_dir, urdf_rel)
+    if not status["supported"]:
+        raise ValueError("MuJoCo actuation startup is available for CAD packages only")
+    if not isinstance(enabled, bool):
+        raise ValueError("enabled must be true or false")
+
+    yml = _config_path(pkg_dir, urdf_rel)
+    os.makedirs(os.path.dirname(yml), exist_ok=True)
+    try:
+        with open(yml, encoding="utf-8") as f:
+            text = f.read()
+    except FileNotFoundError:
+        text = ""
+
+    if not os.path.exists(yml):
+        open(yml, "a", encoding="utf-8").close()
+    _ws._snapshot(
+        str(pkg_dir), yml,
+        "MuJoCo actuation on startup -> " + ("enabled" if enabled else "disabled"))
+    text = _set_top_level_bool(text, "mujoco_actuation_enabled", enabled)
+    with open(yml, "w", encoding="utf-8") as f:
+        f.write(text)
+
+    print(
+        "[sw2robot.web] MuJoCo actuation on startup -> "
+        + ("enabled" if enabled else "disabled"))
+    return actuation_payload(pkg_dir, urdf_rel)
+
+
 def _read_json(handler):
     try:
         n = int(handler.headers.get("Content-Length", "0") or 0)
@@ -233,6 +292,20 @@ class _ActuationHandler(_inv._InventorHandler):
                     raise ValueError("motor must be true or false")
                 payload = set_actuated_joint(
                     cls.pkg_dir, cls.urdf_rel, joint, motor)
+                return self._send_json(payload)
+            except ValueError as e:
+                return self._send_json({"error": str(e)}, 400)
+            except OSError as e:
+                return self._send_json({"error": str(e)}, 500)
+        if path == "/api/set_actuation_startup":
+            cls = type(self)
+            try:
+                data = _read_json(self)
+                enabled = data.get("enabled")
+                if not isinstance(enabled, bool):
+                    raise ValueError("enabled must be true or false")
+                payload = set_mujoco_actuation_startup(
+                    cls.pkg_dir, cls.urdf_rel, enabled)
                 return self._send_json(payload)
             except ValueError as e:
                 return self._send_json({"error": str(e)}, 400)
