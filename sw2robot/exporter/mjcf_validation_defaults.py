@@ -6,8 +6,17 @@ also used to validate mechanics with no controller attached.  For that use case
 we deliberately default to:
 
 * no derived joint damping (``backemf_damping=False``),
-* no synthetic foot contact spheres (``foot_contacts=False``), and
-* strict source-mesh collision geometry (``collision='copy'``).
+* no synthetic foot contact spheres (``foot_contacts=False``),
+* source-mesh collision geometry (``collision='copy'``), and
+* selective robot self-collision: non-adjacent bodies collide, while directly
+  joint-connected bodies and CAD closed-loop endpoints are explicitly excluded.
+
+The last item is important for CAD mechanisms.  Disabling self-collision globally
+lets different links pass through each other; enabling every body pair blindly can
+make joint interfaces fight each other.  The selective policy keeps the physical
+collision checks that prevent remote links from interpenetrating while suppressing
+only body pairs that are mechanically connected by a tree joint or restored loop
+hinge.
 
 Damping remains a code-level interface.  An advanced caller can explicitly pass
 ``backemf_damping=True`` to restore the converter's effort/velocity-derived
@@ -19,6 +28,11 @@ collision modes remain available only when a caller deliberately passes
 ``strict_mesh_collision=False`` together with e.g. ``collision='coacd'``.  The
 normal Web/CLI MJCF path therefore cannot silently turn CAD meshes into boxes,
 hulls or CoACD parts because of a stale collision selector.
+
+The legacy ``self_collision`` bool remains available to code callers: explicitly
+passing it preserves the converter's old full-on/full-off behaviour.  The new
+``selective_self_collision`` policy is the default only when ``self_collision``
+is not supplied; it can also be explicitly enabled/disabled by advanced callers.
 
 Floating-base spawn height is package metadata.  ``mujoco_spawn_height`` in
 ``<robot>.joints.yaml`` is an absolute world-Z value in metres.  If omitted, the
@@ -35,13 +49,28 @@ import os
 import xml.etree.ElementTree as ET
 from functools import wraps
 
+_COLLISION_GROUP = "3"
+_ROBOT_CONTYPE = "2"
+# bit 0 = environment (ground), bit 1 = robot.  Robot geoms advertise affinity
+# to BOTH so they collide with the ground and with other robot bodies.
+_ROBOT_CONAFFINITY_SELF = "3"
+
 
 def _prepare_kwargs(kwargs):
-    """Return ``(kwargs_for_mjcf_export, motor_damping, strip_motor_damping)``.
+    """Return exporter kwargs plus post-process policy values.
+
+    Returns ``(kwargs_for_mjcf_export, motor_damping, strip_motor_damping,
+    selective_self_collision)``.
 
     ``foot_contacts=None`` historically meant "add them for floating-base
-    robots", so normalise None to False.  ``strict_mesh_collision`` is consumed
-    here (the underlying exporter does not know that policy flag).
+    robots", so normalise None to False.  ``strict_mesh_collision`` and
+    ``selective_self_collision`` are wrapper policy flags; the underlying
+    converter does not know them.
+
+    Compatibility rule: if a caller explicitly passes the legacy
+    ``self_collision`` bool, preserve that old full-on/full-off request unless
+    ``selective_self_collision`` is explicitly supplied too.  Web/normal calls
+    do not pass ``self_collision``, so they receive the safer selective mode.
     """
     out = dict(kwargs)
     explicit_backemf = bool(out.get("backemf_damping", False))
@@ -53,13 +82,32 @@ def _prepare_kwargs(kwargs):
     strict_mesh = bool(out.pop("strict_mesh_collision", True))
     if strict_mesh:
         # 'copy' reuses the CAD/visual mesh as the collision STL without any
-        # primitive fitting, convex hull or CoACD approximation.
+        # primitive fitting, convex hull or CoACD approximation by this exporter.
         out["collision"] = "copy"
     else:
         out.setdefault("collision", "copy")
 
+    selective_arg = out.pop("selective_self_collision", None)
+    explicit_legacy_self = "self_collision" in out
+    if selective_arg is None:
+        selective_self_collision = not explicit_legacy_self
+    else:
+        selective_self_collision = bool(selective_arg)
+
+    if selective_self_collision:
+        # Ask the converter for its stable no-self-collision form, then enable
+        # exactly the desired body pairs below.  This avoids depending on how a
+        # particular scikit-robot version implements its blanket self-collision
+        # switch while still preserving the legacy bool for explicit callers.
+        out["self_collision"] = False
+
     motor_damping = out.pop("motor_damping", None)
-    return out, motor_damping, not explicit_backemf
+    return (
+        out,
+        motor_damping,
+        not explicit_backemf,
+        selective_self_collision,
+    )
 
 
 def _motor_joints(root):
@@ -114,6 +162,123 @@ def _apply_motor_damping(root, motor_damping=None, *, strip_default=True):
             joint.set("damping", value)
             changed = True
     return changed
+
+
+def _pair_key(body1, body2):
+    if not body1 or not body2 or body1 == body2:
+        return None
+    return tuple(sorted((str(body1), str(body2))))
+
+
+def _tree_connected_body_pairs(worldbody):
+    """Direct MJCF parent-child body pairs after fixed-link merging."""
+    pairs = set()
+
+    def walk(container, parent_name=None):
+        for body in container.findall("body"):
+            name = body.get("name")
+            key = _pair_key(parent_name, name)
+            if key is not None:
+                pairs.add(key)
+            walk(body, name)
+
+    walk(worldbody)
+    return pairs
+
+
+def _loop_connected_body_pairs(root):
+    """Body pairs connected by restored CAD loop equality/connect constraints."""
+    pairs = set()
+    equality = root.find("equality")
+    if equality is None:
+        return pairs
+    for connect in equality.findall("connect"):
+        key = _pair_key(connect.get("body1"), connect.get("body2"))
+        if key is not None:
+            pairs.add(key)
+    return pairs
+
+
+def _ensure_contact(root):
+    contact = root.find("contact")
+    if contact is not None:
+        return contact, False
+
+    contact = ET.Element("contact")
+    children = list(root)
+    worldbody = root.find("worldbody")
+    if worldbody is not None and worldbody in children:
+        root.insert(children.index(worldbody) + 1, contact)
+    else:
+        idx = next(
+            (i for i, child in enumerate(children)
+             if child.tag in ("equality", "actuator", "sensor", "keyframe")),
+            len(children),
+        )
+        root.insert(idx, contact)
+    return contact, True
+
+
+def _apply_selective_self_collision(root):
+    """Enable robot-vs-robot collision except at mechanical connections.
+
+    Collision geoms emitted by the converter are group 3.  They keep contype bit
+    1 (value 2) and receive conaffinity bits 0+1 (value 3):
+
+    * robot vs ground (1/1) still collides via ``1 & 3``;
+    * robot vs robot now collides via ``2 & 3``.
+
+    ``<contact><exclude>`` entries are then added for every direct tree
+    parent-child body pair and every body pair tied together by the restored CAD
+    loop equality constraints.  Those interfaces intentionally overlap/touch at
+    their joints and should not generate contact forces against the mechanism.
+
+    Returns ``(changed, report)``.
+    """
+    worldbody = root.find("worldbody")
+    if worldbody is None:
+        return False, {"collision_geoms": 0, "excluded_pairs": []}
+
+    changed = False
+    collision_geoms = 0
+    for body in worldbody.iter("body"):
+        for geom in body.findall("geom"):
+            if geom.get("group") != _COLLISION_GROUP:
+                continue
+            collision_geoms += 1
+            if geom.get("contype") != _ROBOT_CONTYPE:
+                geom.set("contype", _ROBOT_CONTYPE)
+                changed = True
+            if geom.get("conaffinity") != _ROBOT_CONAFFINITY_SELF:
+                geom.set("conaffinity", _ROBOT_CONAFFINITY_SELF)
+                changed = True
+
+    excluded = _tree_connected_body_pairs(worldbody)
+    excluded.update(_loop_connected_body_pairs(root))
+    excluded = {pair for pair in excluded if pair is not None}
+
+    if excluded:
+        contact, created = _ensure_contact(root)
+        changed = changed or created
+        existing = {
+            _pair_key(elem.get("body1"), elem.get("body2"))
+            for elem in contact.findall("exclude")
+        }
+        existing.discard(None)
+        for body1, body2 in sorted(excluded):
+            if (body1, body2) in existing:
+                continue
+            ET.SubElement(contact, "exclude", {
+                "body1": body1,
+                "body2": body2,
+            })
+            existing.add((body1, body2))
+            changed = True
+
+    return changed, {
+        "collision_geoms": collision_geoms,
+        "excluded_pairs": sorted(excluded),
+    }
 
 
 def _configured_spawn_height(pkg_dir, robot_name):
@@ -213,7 +378,8 @@ def _apply_spawn_height(root, configured_height=None):
 
 
 def _postprocess_path(out_root, pkg_dir, robot_name,
-                      motor_damping, strip_default):
+                      motor_damping, strip_default,
+                      selective_self_collision):
     mjcf_dir = os.path.join(out_root, "mjcf")
     if not os.path.isdir(mjcf_dir):
         return
@@ -227,14 +393,19 @@ def _postprocess_path(out_root, pkg_dir, robot_name,
         changed = _apply_motor_damping(
             root, motor_damping, strip_default=strip_default)
         spawn_changed, _ = _apply_spawn_height(root, spawn_height)
-        if changed or spawn_changed:
+        changed = changed or spawn_changed
+        if selective_self_collision:
+            collision_changed, _ = _apply_selective_self_collision(root)
+            changed = changed or collision_changed
+        if changed:
             ET.indent(tree, space="  ")
             tree.write(path, encoding="unicode", xml_declaration=False)
         return
 
 
 def _postprocess_files(files, pkg_dir, robot_name,
-                       motor_damping, strip_default):
+                       motor_damping, strip_default,
+                       selective_self_collision):
     spawn_height = _configured_spawn_height(pkg_dir, robot_name)
     out = []
     for arc, data in files:
@@ -244,7 +415,11 @@ def _postprocess_files(files, pkg_dir, robot_name,
             changed = _apply_motor_damping(
                 root, motor_damping, strip_default=strip_default)
             spawn_changed, _ = _apply_spawn_height(root, spawn_height)
-            if changed or spawn_changed:
+            changed = changed or spawn_changed
+            if selective_self_collision:
+                collision_changed, _ = _apply_selective_self_collision(root)
+                changed = changed or collision_changed
+            if changed:
                 ET.indent(root, space="  ")
                 data = ET.tostring(root, encoding="utf-8")
         out.append((arc, data))
@@ -265,20 +440,32 @@ def install():
     def write_mjcf_package(*args, **kwargs):
         pkg_dir = args[0] if args else kwargs["pkg_dir"]
         robot_name = args[1] if len(args) > 1 else kwargs["robot_name"]
-        inner, motor_damping, strip_default = _prepare_kwargs(kwargs)
+        (
+            inner,
+            motor_damping,
+            strip_default,
+            selective_self_collision,
+        ) = _prepare_kwargs(kwargs)
         out_root = original_write(*args, **inner)
         _postprocess_path(
-            out_root, pkg_dir, robot_name, motor_damping, strip_default)
+            out_root, pkg_dir, robot_name,
+            motor_damping, strip_default, selective_self_collision)
         return out_root
 
     @wraps(original_build)
     def build_mjcf_package(*args, **kwargs):
         pkg_dir = args[0] if args else kwargs["pkg_dir"]
         robot_name = args[1] if len(args) > 1 else kwargs["robot_name"]
-        inner, motor_damping, strip_default = _prepare_kwargs(kwargs)
+        (
+            inner,
+            motor_damping,
+            strip_default,
+            selective_self_collision,
+        ) = _prepare_kwargs(kwargs)
         pkg, files = original_build(*args, **inner)
         return pkg, _postprocess_files(
-            files, pkg_dir, robot_name, motor_damping, strip_default)
+            files, pkg_dir, robot_name,
+            motor_damping, strip_default, selective_self_collision)
 
     mod.write_mjcf_package = write_mjcf_package
     mod.build_mjcf_package = build_mjcf_package
