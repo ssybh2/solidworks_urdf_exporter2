@@ -165,9 +165,26 @@ def extract_inventor(cad_path, out_dir=None, robot_name=None,
                 _emit(progress, f"unique URDF link names: {unique_count}/{len(components)}")
 
                 names = {c.name for c in components}
-                edges, limits, ground, covered, warnings = native_joints(definition, names)
+                (edges, limits, ground, covered,
+                 warnings, diagnostics) = native_joints(definition, names)
+
+                for line in diagnostics:
+                    _emit(progress, line)
+
+                # If the CAD author has explicit Rotational/Slide Assembly
+                # Joints, those declarations are authoritative.  Old Insert
+                # constraints can coexist in the same IAM simply as positioning
+                # aids; promoting them to revolute created the exact 6 -> 8
+                # mismatch seen in the web editor.  Keep legacy constraints only
+                # as fixed connectivity in this mode.
+                native_motion = len(limits) > 0
+                if native_motion:
+                    _emit(progress,
+                          f"native-joint mode: {len(limits)} explicit movable "
+                          "Assembly Joint(s); legacy constraints cannot add DOF")
+
                 extra_edges, extra_limits, extra_ground = classic_constraints(
-                    definition, names, covered)
+                    definition, names, covered, allow_movable=not native_motion)
                 edges.update(extra_edges)
                 limits.extend(extra_limits)
                 ground.update(extra_ground)
