@@ -17,9 +17,9 @@ matching the final MJCF joint names.
 
 from __future__ import annotations
 
-from functools import wraps
 import os
 import xml.etree.ElementTree as ET
+from functools import wraps
 
 
 def _config_path(pkg_dir, robot_name):
@@ -43,6 +43,7 @@ def _configured_actuated_joints(pkg_dir, robot_name):
         return None
     try:
         import yaml
+
         with open(path, encoding="utf-8") as f:
             cfg = yaml.safe_load(f) or {}
     except Exception:
@@ -54,7 +55,9 @@ def _configured_actuated_joints(pkg_dir, robot_name):
         return None
 
     from .model import safe_name
-    overrides = cfg.get("joint_names") if isinstance(cfg.get("joint_names"), dict) else {}
+
+    overrides = (cfg.get("joint_names")
+                 if isinstance(cfg.get("joint_names"), dict) else {})
     result = set()
     for raw in values:
         if raw is None:
